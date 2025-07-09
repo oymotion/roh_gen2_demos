@@ -19,37 +19,39 @@ ROH_HARDWARE_TYPE = 0x2001
 
 file_path = os.path.abspath(os.path.dirname(__file__))
 
-# Switch to the correct hand by uncommenting the corresponding line
-# Right hand
-pic_path = "/gestures/force_right.png"
-FORCE_POINT = RIGHT_FORCE_POINT
+def img_init():
+    """
+    Init force image.
+    :return: None
+    """
+    file_path = os.path.abspath(os.path.dirname(__file__))
+    global force_img, force_point, height, width
+    
+    # Switch to the correct hand
+    while True:
+        # 显示选择提示
+        print("请选择配置:1. 右手 (Right) 2. 左手 (Left)")
 
-# Left hand
-# pic_path = "/gestures/force_left.png"
-# FORCE_POINT = LEFT_FORCE_POINT
+        # 获取用户输入
+        choice = input("请输入选项(1或2): ")
+        if choice == "1":
+            pic_path = "/gestures/force_right.png"
+            force_point = RIGHT_FORCE_POINT
+            break
+        elif choice == "2":
+            pic_path = "/gestures/force_left.png"
+            force_point = LEFT_FORCE_POINT
+            break
+        else:
+            print("无效输入，请输入1或2")
 
-video = cv2.VideoCapture(0)
+    image_path = file_path + pic_path
+    force_img = cv2.imread(image_path)
 
-# 获取摄像头的分辨率
-width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))  # 摄像头帧宽度
-height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))  # 摄像头帧高度
+    if force_img is None:
+        raise ValueError("无法加载图片，请检查路径是否正确\n Failed to load image, please check the path")
 
-detector = HandDetector(maxHands=1, detectionCon=0.8)
-
-# 创建可调整大小的窗口
-cv2.namedWindow("Video", cv2.WINDOW_NORMAL)
-cv2.namedWindow("Heatmap", cv2.WINDOW_NORMAL)
-
-# 设置窗口大小为摄像头分辨率
-cv2.resizeWindow("Video", width, height)
-
-image_path = file_path + pic_path
-force_img = cv2.imread(image_path)
-
-if force_img is None:
-    raise ValueError("无法加载图片，请检查路径是否正确\n Failed to load image, please check the path")
-
-height, width = force_img.shape[:2]
+    height, width = force_img.shape[:2]
 
 def interpolate(n, from_min, from_max, to_min, to_max):
     return (n - from_min) / (from_max - from_min) * (to_max - to_min) + to_min
@@ -105,6 +107,25 @@ def read_registers(client, address, count):
         return None
 
 def main():
+    # 初始化图像
+    img_init()
+
+    # 初始化窗口
+    video = cv2.VideoCapture(0)
+
+    # 获取摄像头的分辨率
+    window_width = int(video.get(cv2.CAP_PROP_FRAME_WIDTH))  # 摄像头帧宽度
+    window_height = int(video.get(cv2.CAP_PROP_FRAME_HEIGHT))  # 摄像头帧高度
+
+    detector = HandDetector(maxHands=1, detectionCon=0.8)
+
+    # 创建可调整大小的窗口
+    cv2.namedWindow("Video", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Heatmap", cv2.WINDOW_NORMAL)
+
+    # 设置窗口大小为摄像头分辨率
+    cv2.resizeWindow("Video", window_width, window_height)
+
     client = ModbusSerialClient(find_comport("CH340"), FramerType.RTU, 115200)
     if not client.connect():
         print("连接Modbus设备失败\nFailed to connect to Modbus device")
@@ -189,7 +210,7 @@ def main():
                 fingers_point_force.append(items)
         # print(finger_force)
 
-        for i, finger_points in enumerate(FORCE_POINT):
+        for i, finger_points in enumerate(force_point):
             force_values = fingers_point_force[i] if i < len(fingers_point_force) else []
             for j, point in enumerate(finger_points):
                 x, y = point

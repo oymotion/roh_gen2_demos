@@ -139,8 +139,6 @@ def main():
     height, width = force_img.shape[:2]
     heatmap = np.zeros((height, width), dtype=np.float32)
     finger_force_sum = [0 for _ in range(NUM_FINGERS)] 
-    intensity = [0, 0, 0, 0, 0, 0]
-    # fingers_point_force :list[list[int]] = [[]]
     fingers_point_force = [[] for _ in range(NUM_FINGERS)] 
 
     client = ModbusSerialClient(find_comport("CH340"), FramerType.RTU, 115200)

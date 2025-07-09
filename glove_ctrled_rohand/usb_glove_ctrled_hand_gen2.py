@@ -23,15 +23,6 @@ file_path = os.path.abspath(os.path.dirname(__file__))
 # Rohand hardware type which supports force feedback
 ROH_HARDWARE_TYPE = 0x2001
 
-# Switch to the correct hand by uncommenting the corresponding line
-# Right hand
-pic_path = "/pic/force_right.png"
-FORCE_POINT = RIGHT_FORCE_POINT
-
-# Left hand
-# pic_path = "/pic/force_left.png"
-# FORCE_POINT = LEFT_FORCE_POINT
-
 # Constants
 MAX_PROTOCOL_DATA_SIZE = 64
 
@@ -212,15 +203,16 @@ class OGlove:
         self.is_whole_packet = False
         return True
 
-    def do_calibration(self, cali_min, cali_max) -> bool:
+    def do_calibration(self, cali_min, cali_max, offset) -> bool:
         """
         Do calibration to obtain user-appropriate glove data.
 
         Args:
             cali_min: Minimum of calicration data.
-            cali_max: Maximum of calicration data.
+            cali_min: Maximum of calicration data.
+            offset: 0-general glove, 1-left or right glove
 
-        Returns:
+        Returns: 
             bool: True if calibration data is valid, False otherwise.
         """
         cali_min[:] = [2000 for _ in range(NUM_FINGERS)]
@@ -235,7 +227,7 @@ class OGlove:
             glove_data = []
 
             for i in range(int(len(glove_raw_data) / 2)):
-                glove_data.append(((glove_raw_data[i * 2]) | (glove_raw_data[i * 2 + 1] << 8)))  # 每两个字节为一个数据
+                glove_data.append((glove_raw_data[offset + i * 2]) | (glove_raw_data[offset + i * 2 + 1] << 8)) # 每两个字节为一个数据
 
                 # 不断刷新最大最小值
                 cali_max[i] = max(cali_max[i], glove_data[i])
@@ -245,8 +237,8 @@ class OGlove:
             print("MIN/MAX of finger {0}: {1}-{2}".format(i, cali_min[i], cali_max[i]))
             if (cali_min[i] >= cali_max[i]):
                 print("无效数据，退出.\nInvalid data, exit.")
-                return False
-
+                return False  
+                              
         return True
 
 def find_comport(port_name):
@@ -298,9 +290,28 @@ def read_registers(client, address, count):
 
 
 async def main():
+    
+    # 选择正确的手
+    while True:
+        # 显示选择提示
+        print("请选择灵巧手配置:1. 右手 (Right) 2. 左手 (Left)")
+
+        # 获取用户输入
+        choice = input("请输入选项(1或2): ")
+        if choice == "1":
+            pic_path = "/pic/force_right.png"
+            FORCE_POINT = RIGHT_FORCE_POINT
+            break
+        elif choice == "2":
+            pic_path = "/pic/force_left.png"
+            FORCE_POINT = LEFT_FORCE_POINT
+            break
+        else:
+            print("无效输入，请输入1或2")
+
     # 配置串口参数（根据实际设备修改）
     glove_serial_port = serial.Serial(
-        port=find_comport("STM" or "串行设备"),
+        port=find_comport("串行设备") or find_comport("STM"),
         baudrate=115200,
         bytesize=serial.EIGHTBITS,
         parity=serial.PARITY_NONE,
@@ -332,13 +343,34 @@ async def main():
     if not write_registers(client, ROH_RESET_FORCE, 1):
         print("力量清零失败\nFailed to reset force")
 
+    # 设置灵巧手运动速度
+    speed = 65535
+    if not write_registers(client, ROH_FINGER_SPEED0, [speed, speed, speed, speed, speed]):
+        print("设置灵巧手运动速度失败\nFailed to set finger speed")
+
     # 初始化手套
     oglove = OGlove(serial=glove_serial_port, timeout=2000)
+    glove_raw_data = bytearray() # 手套原始数据，单字节形式
+    # 区分左右手套
+    left_or_right = None
+    offset = 0
+    
+    if oglove.get_data(glove_raw_data):
+        if len(glove_raw_data) & 0x01 == 1:
+            left_or_right = glove_raw_data[0]
+            offset = 1
+    
+    if left_or_right == 0:
+        print("使用左手手套\nUse left glove")
+    elif left_or_right == 1:
+        print("使用右手手套\nUse right glove")
+    else:
+        print("使用通用手套\nUse general glove")
 
     # 开始校正
     cali_min = [2000 for _ in range(NUM_FINGERS)]
     cali_max = [0 for _ in range(NUM_FINGERS)]
-    if not (oglove.do_calibration(cali_min, cali_max)):
+    if not (oglove.do_calibration(cali_min, cali_max, offset)):
         exit(-1)
     
     # 热力图绘制
@@ -356,7 +388,6 @@ async def main():
     heatmap = np.zeros((height, width), dtype=np.float32)
 
     try:
-        glove_raw_data = bytearray()  # 手套原始数据，单字节形式
         finger_id = 0
 
         while True:
