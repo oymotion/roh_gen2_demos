@@ -21,16 +21,19 @@ NUM_FINGERS = 6
 
 # Device filters
 DEV_NAME_PREFIX = "gForceBLE"
-DEV_MIN_RSSI = -64
+DEV_MIN_RSSI = -128
 
 # sample resolution:BITS_8 or BITS_12
-SAMPLE_RESOLUTION = 8
+SAMPLE_RESOLUTION = 12
 
 # Rohand hardware type which supports force feedback
 ROH_HARDWARE_TYPE = 0x2001
 
 # Channel0: thumb, Channel1: index, Channel2: middle, Channel3: ring, Channel4: pinky, Channel5: thumb root
 INDEX_CHANNELS = [7, 6, 0, 3, 4, 5]
+
+TOLERANCE = round(65536 / 32)  # 判断目标位置变化的阈值，位置控制模式时为整数，角度控制模式时为浮点数
+SPEED_CONTROL_THRESHOLD = 8192 # 位置变化低于该值时，线性调整手指运动速度
 
 file_path = os.path.abspath(os.path.dirname(__file__))
 
@@ -105,7 +108,7 @@ class Application:
         emg_max = [0 for _ in range(NUM_FINGERS)]
         prev_finger_data = [65535 for _ in range(NUM_FINGERS)]
         finger_data = [0 for _ in range(NUM_FINGERS)]
-
+        prev_dir = [0 for _ in range(NUM_FINGERS)]
 
         # 连接到Modbus设备
         client = ModbusSerialClient(self.find_comport("CH340"), FramerType.RTU, 115200)
@@ -132,7 +135,7 @@ class Application:
 
         # Set the EMG raw data configuration, default configuration is 8 bits, 16 batch_len
         if SAMPLE_RESOLUTION == 12:
-            cfg = EmgRawDataConfig(fs=100, channel_mask=0xff, batch_len = 48, resolution = SampleResolution.BITS_12)
+            cfg = EmgRawDataConfig(fs=100, channel_mask=0xFF, batch_len = 48, resolution = SampleResolution.BITS_12)
             await gforce_device.set_emg_raw_data_config(cfg)
 
         baterry_level = await gforce_device.get_battery_level()
@@ -147,11 +150,16 @@ class Application:
             v = await q.get()
             # print(v)
 
-            for i in range(len(v)):
-                for j in range(NUM_FINGERS):
-                    emg_max[j] = max(emg_max[j], v[i][INDEX_CHANNELS[j]])
-                    emg_min[j] = min(emg_min[j], v[i][INDEX_CHANNELS[j]])
-            # print(emg_min, emg_max)
+            emg_sum = [0 for _ in range(NUM_FINGERS)]
+
+            for j in range(len(v)):
+                for i in range(NUM_FINGERS):
+                    emg_sum[i] += v[j][INDEX_CHANNELS[i]]
+
+            for i in range(NUM_FINGERS):
+                temp = emg_sum[i] / len(v)
+                emg_max[i] = max(emg_max[i], temp)
+                emg_min[i] = min(emg_min[i], temp)
 
         range_valid = True
 
@@ -168,21 +176,67 @@ class Application:
             v = await q.get()
             # print(v)
 
-            for i in range(len(v)):
-                for j in range(NUM_FINGERS):
-                    # emg_data[j] = round((emg_data[j] * 1 + v[i][INDEX_CHANNELS[j]]) / 2)
-                    emg_data[j] = v[i][INDEX_CHANNELS[j]]
-                    finger_data[j] = round(interpolate(emg_data[j], emg_min[j], emg_max[j], 65535, 0))
-                    finger_data[j] = clamp(finger_data[j], 0, 65535)
-            # print(finger_data)
-            # print(emg_data)
-            # Control the ROHand
-            if not self.write_registers(client, ROH_FINGER_POS_TARGET0, finger_data):
-                print("控制指令发送失败\nFailed to send control command")
+            emg_sum = [0 for _ in range(NUM_FINGERS)]
 
-            # prev_finger_data = finger_data.copy()
-            # for i in range(len(finger_data)):
-            #     prev_finger_data[i] = finger_data[i]
+            for j in range(len(v)):
+                for i in range(NUM_FINGERS):
+                    emg_sum[i] += v[j][INDEX_CHANNELS[i]]
+
+            for i in range(NUM_FINGERS):
+                emg_data[i] = (emg_data[i] * 3 + emg_sum[i] / len(v)) / 4
+                finger_data[i] = round(interpolate(emg_data[i], emg_min[i], emg_max[i], 65535, 0))
+                finger_data[i] = clamp(finger_data[i], 0, 65535)
+
+            dir = [0 for _ in range(NUM_FINGERS)]
+            pos = [0 for _ in range(NUM_FINGERS)]
+            target_changed = False
+
+            for i in range(NUM_FINGERS):
+                if finger_data[i] > prev_finger_data[i] + TOLERANCE:
+                    prev_finger_data[i] = finger_data[i]
+                    dir[i] = 1
+                elif finger_data[i] < prev_finger_data[i] - TOLERANCE:
+                    prev_finger_data[i] = finger_data[i]
+                    dir[i] = -1
+
+                # 只在方向发生变化时发送目标位置/角度
+                if dir[i] != prev_dir[i]:
+                    prev_dir[i] = dir[i]
+                    target_changed = True
+
+                if dir[i] == -1:
+                    pos[i] = 0
+                elif dir[i] == 0:
+                    pos[i] = finger_data[i]
+                else:
+                    pos[i] = 65535
+
+            if target_changed:
+                # Read current position
+                curr_pos = [0 for _ in range(NUM_FINGERS)]
+                resp = self.read_registers(client, ROH_FINGER_POS0, NUM_FINGERS)
+
+                if resp is not None:
+                    curr_pos = resp
+                else:
+                    print("读取位置指令发送失败\nFailed to send read pos command")
+                    print(f"read_registers({ROH_FINGER_POS0}, {NUM_FINGERS}, {NODE_ID}) returned {resp})")
+                    continue
+
+                speed = [0 for _ in range(NUM_FINGERS)]
+
+                for i in range(NUM_FINGERS):
+                    temp = interpolate(abs(curr_pos[i] - finger_data[i]), 0, SPEED_CONTROL_THRESHOLD, 0, 65535)
+                    speed[i] = clamp(round(temp), 0, 65535)
+
+                # Set speed
+                if not self.write_registers(client, ROH_FINGER_SPEED0, speed):
+                    print("设置速度失败\nFailed to set speed")
+
+                # Control the ROHand
+                if not self.write_registers(client, ROH_FINGER_POS_TARGET0, pos):
+                    print("设置位置失败\nFailed to set pos")
+
 
         await gforce_device.stop_streaming()
         await gforce_device.disconnect()
