@@ -11,7 +11,9 @@ from pymodbus.client import ModbusSerialClient
 from pymodbus.exceptions import ModbusException
 from serial.tools import list_ports
 
-from roh_registers_v2 import *
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from common.roh_registers_v2 import *
 
 # ROHand configuration
 NODE_ID = [2] # Support multiple nodes
@@ -19,7 +21,7 @@ WITH_LODE = False # Choose with load or without load
 TIME_DELAY = 1.5
 
 # Rohand hardware type which supports force feedback
-ROH_HARDWARE_TYPE = 0x2001
+ROH_HARDWARE_TYPE_AP = 0x2001
 
 
 current_dir = os.path.dirname(os.path.realpath(__file__))
@@ -137,12 +139,12 @@ class Application:
             print("Failed to connect Modbus device")
             exit(-1)
 
-        # get hardware version
-        for i in range(len(NODE_ID)):
-            resp = self.read_registers(client, ROH_HW_VERSION, 1, NODE_ID[i])
-            if resp is None or resp[0] != ROH_HARDWARE_TYPE:
-                print("读取硬件版本失败,或不支持的硬件版本,设备ID:{0}\nFailed to read hardware version or unsupported hardware type, device ID:{0}".format(NODE_ID[i]))
-                exit(-1)
+        # # get hardware version
+        # for i in range(len(NODE_ID)):
+        #     resp = self.read_registers(client, ROH_HW_VERSION, 1, NODE_ID[i])
+        #     if resp is None or resp[0] != ROH_HARDWARE_TYPE:
+        #         print("Failed to read hardware version or unsupported hardware type, device ID:{0}".format(NODE_ID[i]))
+        #         exit(-1)
 
         # Open all fingers
         self.write_registers(client, ROH_FINGER_POS_TARGET0, [0, 0, 0, 0, 0, 0])

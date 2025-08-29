@@ -11,9 +11,10 @@ from pymodbus.client import ModbusSerialClient
 from pymodbus.exceptions import ModbusException
 from serial.tools import list_ports
 
-from lib_gforce import gforce
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from roh_registers_v2 import *
+from lib_gforce import gforce
+from common.roh_registers_v2 import *
 
 # ROHand configuration
 NODE_ID = 2
@@ -49,10 +50,6 @@ GESTURES = {
    "GRASP":    [27525, 29491, 32768, 27525, 24903, 65535]
 }
 
-current_dir = os.path.dirname(os.path.realpath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
-
 
 def clamp(n, smallest, largest):
     return max(smallest, min(n, largest))
@@ -67,10 +64,6 @@ class Application:
     def __init__(self):
         signal.signal(signal.SIGINT, lambda signal, frame: self._signal_handler())
         self.terminated = False
-
-    def _signal_handler(self):
-        print("You pressed ctrl-c, exit")
-        self.terminated = True
 
     def _signal_handler(self):
         print("You pressed ctrl-c, exit")
@@ -128,26 +121,26 @@ class Application:
 
         client = ModbusSerialClient(self.find_comport("CH340"), FramerType.RTU, 115200)
         if not client.connect():
-            print("连接Modbus设备失败\nFailed to connect to Modbus device")
+            print("Failed to connect to Modbus device")
             exit(-1)
 
-        # 获取硬件版本信息
-        resp = self.read_registers(client, ROH_HW_VERSION, 1)
-        if resp is None or resp[0] != ROH_HARDWARE_TYPE:
-            print("读取硬件版本失败，或不支持的硬件版本\nFailed to read hardware version or unsupported hardware type")
-            exit(-1)
+        # # Get hardware version information
+        # resp = self.read_registers(client, ROH_HW_VERSION, 1)
+        # if resp is None or resp[0] != ROH_HARDWARE_TYPE:
+        #     print("Failed to read hardware version or unsupported hardware type")
+        #     exit(-1)
 
         def gestures_control(gesture):
             if not self.write_registers(client, ROH_FINGER_POS_TARGET0, GESTURES["REST"]):
-                print("控制指令发送失败\nFailed to send control command")
+                print("Failed to send control command")
             time.sleep(0.5)
     
             # if not self.write_registers(client, ROH_FINGER_POS_TARGET5, gesture[NUM_FINGERS]):
-            #     print("控制指令发送失败\nFailed to send control command")
+            #     print("Failed to send control command")
             # time.sleep(1)
 
             if not self.write_registers(client, ROH_FINGER_POS_TARGET0, gesture):
-                print("控制指令发送失败\nFailed to send control command")
+                print("Failed to send control command")
 
         try:
             await gforce_device.connect()
@@ -166,6 +159,7 @@ class Application:
         while not self.terminated:
                 gesture = await q.get()
                 print("gesture ID:", gesture)
+
                 if (gesture != prev_pos):
                     match(gesture):
                         case 0: continue 

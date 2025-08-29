@@ -275,6 +275,8 @@ class PosInputUsbGlove:
                 # 映射到灵巧手位置
                 finger_data[i] = round(self.interpolate(glove_data[i], self._cali_min[i], self._cali_max[i], 65535, 0))
                 finger_data[i] = self.clamp(finger_data[i], 0, 65535)  # 限制在最大最小范围内
+        else:
+            finger_data = []
 
         return finger_data
 
