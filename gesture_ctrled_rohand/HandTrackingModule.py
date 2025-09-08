@@ -148,7 +148,7 @@ class HandDetector:
                 degree2Interpolation = interpolate(degree, MINTHUMBDEGREE, MAXTHUMBDEGREE, 0, 1)
                 degree2Interpolation = round(clamp(degree2Interpolation, 0, 1), 2)
                 # print("degree2Interpolation: " + "  " +str(degree2Interpolation))
-                if 0 <= degree2Interpolation <= 0.2:
+                if 0 <= degree2Interpolation <= 0.6:
                     degree2Interpolation = 0
                 elif 0.85 <= degree2Interpolation <= 1:
                     degree2Interpolation = 1

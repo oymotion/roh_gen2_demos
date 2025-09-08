@@ -21,15 +21,16 @@ from HandTrackingModule import HandDetector
 # Hand configuration
 NODE_ID = 2
 NUM_FINGERS = 6
-TACS_3D_FORCE = 1
-TACS_DOT_MATRIX = 0
-
-FORCE_TYPE = TACS_DOT_MATRIX
-
+THUMB_ROOT_ID = 5
 PALM_INDEX = 5
 
 # Rohand hardware type which supports force feedback
 ROH_HARDWARE_TYPE_AP = 0x2001
+# Force setting
+TACS_3D_FORCE = 1
+TACS_DOT_MATRIX = 0
+FORCE_TYPE = TACS_DOT_MATRIX
+FORCE_TARGET = 200
 
 # global variable
 file_path = os.path.abspath(os.path.dirname(__file__))
@@ -126,9 +127,9 @@ def read_registers(client, address, count):
         return None
 
 
-def data_reading(client, heatmap_dot):
+def get_finger_force(client, heatmap_dot):
     """
-    Independent thread: Continuously read force sensor data and place it in the queue
+    Continuously read force sensor data and place it in the queue
     :param client: Modbus client instance
     :param heatmap_dot: HeatMapDot instance, that contains force sensor configuration information
     """
@@ -150,6 +151,7 @@ def data_reading(client, heatmap_dot):
                         val = ((resp[j] & 0xFF) << 8) | (
                             (resp[j] >> 8) & 0xFF
                         )
+
                         # Avoid invalid data
                         if val < 65535:
                             finger_force[i].append(val)
@@ -159,6 +161,7 @@ def data_reading(client, heatmap_dot):
                     finger_force_sum[i] = math.sqrt(
                         finger_force[i][0] ** 2 + finger_force[i][1] ** 2
                     )
+
                     # print(finger_force_sum[i])
                     if reg_cnt >= 6:
                         finger_force_sum[i] += math.sqrt(
@@ -363,6 +366,9 @@ def init_video_and_detector():
 def main():
     prev_gesture = [0, 0, 0, 0, 0, 0]
     finger_force, finger_force_sum = [], []
+    # Flag that indicates setting force target for the first time, to avoid repeated setting
+    first_set = [True for _ in range(NUM_FINGERS - 1)]
+    force_control_mode = False
 
     # sub_model = 0
     heatmap_dot = HeatMapDot(FORCE_TYPE)
@@ -375,6 +381,7 @@ def main():
         exit(-1)
 
     resp = read_registers(client, ROH_HW_VERSION, 1)
+
     if resp is None:
         print("Failed to read hardware version or unsupported hardware type")
         exit(-1)
@@ -385,6 +392,7 @@ def main():
 
     if force_sensor:
         hand_type = input("select left hand(0) or right hand(1)")
+        print("Press '1' to enter force control mode, '2' to exit force control mode, 'q' to exit program\n")
         img_init(hand_type, heatmap_dot)
         cv2.namedWindow("Heatmap", cv2.WINDOW_NORMAL)
 
@@ -393,43 +401,67 @@ def main():
             print("Failed to reset force")
 
     init_video_and_detector()
-
     threading.Thread(target=camera_thread, daemon=True).start()
 
     while True:
         gesture = gesture_queue.get()
+
         if not image_queue.empty():
             img = image_queue.get()
-            cv2.putText(
-                img,
-                "Try with gestures",
-                (16, 272),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                2,
-                (0, 255, 0),
-                5,
-            )
+            cv2.putText(img, "Try with gestures", (16, 272), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 5)
             cv2.imshow("Video", img)
 
-        if prev_gesture != gesture:
-            if not write_registers(client, ROH_FINGER_POS_TARGET0, gesture):
-                print("Failed to write target position")
-            prev_gesture = gesture
+        # Choose different control mode
+        if force_control_mode:
+            for i in range(NUM_FINGERS - 1):
+                if gesture[i] > 0:
+                    # print(resp[0])
+                    if first_set[i]:
+                        write_registers(client, ROH_FINGER_FORCE_TARGET0 + i, FORCE_TARGET)
+                        first_set[i] = False
+                else:
+                    if not first_set[i]:
+                        write_registers(client, ROH_FINGER_FORCE_TARGET0 + i, 0)
+                        first_set[i] = True
+
+            # thumb root control
+            if prev_gesture[THUMB_ROOT_ID] != gesture[THUMB_ROOT_ID]:
+                write_registers(client, ROH_FINGER_POS_TARGET5, gesture[THUMB_ROOT_ID])
+                prev_gesture[THUMB_ROOT_ID] = gesture[THUMB_ROOT_ID]
+        # default:position control mode
+        else:
+            if prev_gesture != gesture:
+                if not write_registers(client, ROH_FINGER_POS_TARGET0, gesture):
+                    print("Failed to write target position")
+                prev_gesture = gesture
 
         # heatmap
         if force_sensor:
-            data_reading(client, heatmap_dot)
+            get_finger_force(client, heatmap_dot)
             if not data_queue.empty():
                 finger_force, finger_force_sum = data_queue.get()
             update_heatmap(finger_force, heatmap_dot)
+            # print(finger_force_sum)
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
+        # set control mode by keybord
+        key = cv2.waitKey(1) & 0xFF
+
+        if force_sensor:
+            if key == ord("1") and not force_control_mode:
+                force_control_mode = True
+                print("Use force control mode")
+            elif key == ord("2") and force_control_mode:
+                force_control_mode = False
+                print("Use position control mode")
+                for i in range(NUM_FINGERS - 1):
+                    write_registers(client, ROH_FINGER_FORCE_TARGET0 + i, 0)
+
+        if key == ord("q"):
             break
 
     _video.release()
     cv2.destroyAllWindows()
     client.close()
-
 
 if __name__ == "__main__":
     main()
