@@ -106,9 +106,7 @@ def img_init(hand_type, heatmap_dot):
     global _force_img
     file_path = os.path.abspath(os.path.dirname(__file__))
 
-    cv2.namedWindow(
-        "Heatmap", cv2.WINDOW_NORMAL
-    )  # Create a window with adjustable size
+    cv2.namedWindow("Heatmap", cv2.WINDOW_NORMAL)  # Create a window with adjustable size
 
     if int(hand_type) == 0:
         pic_path = "/pic/force_left.png"
@@ -121,9 +119,7 @@ def img_init(hand_type, heatmap_dot):
     _force_img = cv2.imread(image_path)
 
     if _force_img is None:
-        raise ValueError(
-            "Failed to load image, please check the path"
-        )
+        raise ValueError("Failed to load image, please check the path")
     else:
         return _force_img
 
@@ -140,32 +136,24 @@ def data_reading(client, heatmap_dot):
         # Fingers force data acquisition
         for i in range(NUM_FINGERS - 1):
             reg_cnt = heatmap_dot.FORCE_VALUE_LENGTH[i]
-            resp = read_registers(
-                client, ROH_FINGER_FORCE_EX0 + i * FORCE_GROUP_SIZE, reg_cnt
-            )
+            resp = read_registers(client, ROH_FINGER_FORCE_EX0 + i * FORCE_GROUP_SIZE, reg_cnt)
 
             if resp is not None and len(resp) == reg_cnt:
                 val = []
 
                 if heatmap_dot.SENSOR_TYPE == TACS_3D_FORCE:
                     for j in range(reg_cnt):
-                        val = ((resp[j] & 0xFF) << 8) | (
-                                (resp[j] >> 8) & 0xFF
-                        )
+                        val = ((resp[j] & 0xFF) << 8) | ((resp[j] >> 8) & 0xFF)
                         # Avoid invalid data
                         if val < 65535:
                             finger_force[i].append(val)
                         else:
                             finger_force[i].append(0)
                     # print(finger_force)
-                    finger_force_sum[i] = math.sqrt(
-                        finger_force[i][0] ** 2 + finger_force[i][1] ** 2
-                    )
+                    finger_force_sum[i] = math.sqrt(finger_force[i][0] ** 2 + finger_force[i][1] ** 2)
                     # print(finger_force_sum[i])
                     if reg_cnt >= 6:
-                        finger_force_sum[i] += math.sqrt(
-                            finger_force[i][3] ** 2 + finger_force[i][4] ** 2
-                        )
+                        finger_force_sum[i] += math.sqrt(finger_force[i][3] ** 2 + finger_force[i][4] ** 2)
                 elif heatmap_dot.SENSOR_TYPE == TACS_DOT_MATRIX:
                     for j in range(reg_cnt):
                         val.append((resp[j] >> 8) & 0xFF)
@@ -175,9 +163,7 @@ def data_reading(client, heatmap_dot):
                     finger_force[i] = val
         # Palm force data acquisition
         reg_cnt = heatmap_dot.FORCE_VALUE_LENGTH[PALM_INDEX]
-        resp = read_registers(
-            client, ROH_FINGER_FORCE_EX0 + PALM_INDEX * FORCE_GROUP_SIZE, reg_cnt
-        )
+        resp = read_registers(client, ROH_FINGER_FORCE_EX0 + PALM_INDEX * FORCE_GROUP_SIZE, reg_cnt)
 
         if resp is not None and len(resp) == reg_cnt:
             val = []
@@ -217,16 +203,11 @@ def curve_init(heatmap_dot):
     colors = ["r-", "b-", "g-", "c-", "m-", "y-"]
 
     for i in range(NUM_FINGERS):
-        (line,) = _ax.plot([], [], colors[i], label=f"{_finger_labels[i]} Value", linewidth=line_width)
+        (line,) = _ax.plot([], [], colors[i], label=f"{_finger_labels[i]}", linewidth=line_width)
         _lines.append(line)
 
         # Set the initial position of the annotation to (0,0), do not specify transform, use the data coordinate system
-        annotation = _ax.text(
-            0, 0, "",
-            ha="left", va="center",
-            bbox=dict(facecolor="white", pad=0.7),
-            fontsize=10
-        )
+        annotation = _ax.text(0, 0, "", ha="left", va="center", bbox=dict(facecolor="white", pad=0.7), fontsize=10)
         _annotations.append(annotation)
 
     _ax.set_ylabel("Force Value")
@@ -257,14 +238,14 @@ def update_heatmap(finger_force, heatmap_dot):
             if heatmap_dot.SENSOR_TYPE == TACS_3D_FORCE:
                 if 0 <= x < _width and 0 <= y < _height and finger_id != 5:
                     # nf
-                    value = data[dot_index * 3]
+                    value = data[dot_index * 3] * heatmap_dot.COLOR_SCALE
                     radius = heatmap_dot.POINT_RADIUS + round(interpolate(value, 0, heatmap_dot.MAX_FORCE, 0, 10))
                     color = interpolate(value, 0, heatmap_dot.MAX_FORCE, 120, 1)
                     color = clamp(color, 1, 120)
                     cv2.circle(heatmap, (x, y), radius, color, -1)
 
                     # tf
-                    value = data[dot_index * 3 + 1]
+                    value = data[dot_index * 3 + 1] * heatmap_dot.COLOR_SCALE
                     length = round(interpolate(value, 0, heatmap_dot.MAX_FORCE, 0, 100))
                     color = interpolate(value, 0, heatmap_dot.MAX_FORCE, 120, 1)
                     color = clamp(color, 1, 120)
@@ -274,15 +255,15 @@ def update_heatmap(finger_force, heatmap_dot):
                     value = math.radians(value)  # convert to radians
                     arrowStart = (x, y)
                     arrowEnd = (
-                        x + int(length * math.cos(value)),
-                        y + int(length * math.sin(value)),
+                        x + int(length * math.cos(value) * heatmap_dot.ARROW_SCALE),
+                        y + int(length * math.sin(value) * heatmap_dot.ARROW_SCALE)
                     )
                     cv2.arrowedLine(heatmap, arrowStart, arrowEnd, color, 5, tipLength=0.3)
 
             elif heatmap_dot.SENSOR_TYPE == TACS_DOT_MATRIX:
                 if 0 <= x < _width and 0 <= y < _height:
                     if dot_index < len(data):
-                        value = data[dot_index]
+                        value = data[dot_index] * heatmap_dot.COLOR_SCALE
                     else:
                         value = 0
                     color = interpolate(value, 0, heatmap_dot.MAX_FORCE, 120, 1)
@@ -323,9 +304,14 @@ def update_curve(finger_force_sum):
             # Annotations displayed at the end of the curve
             _annotations[i].set_position((x, y))
             _annotations[i].set_text(f"{_finger_labels[i]}: {y:.1f}")
+            # update labels
+            _lines[i].set_label(f"{_finger_labels[i]} Value: {y:.1f}")
 
     _ax.relim()
     _ax.autoscale_view(scalex=True, scaley=False)
+
+    # Refresh view
+    _ax.legend(loc="upper right")
 
     _fig.canvas.draw()
     _fig.canvas.flush_events()
@@ -341,7 +327,7 @@ def main():
     start_time = time.time()
     hand_type = input("select left hand(0) or right hand(1)")
 
-    client = ModbusSerialClient(find_comport("CH340"), FramerType.RTU, 115200)
+    client = ModbusSerialClient(find_comport("CH340") or find_comport("USB"), FramerType.RTU, 115200)
     if not client.connect():
         print("Failed to connect to Modbus device")
         exit(-1)

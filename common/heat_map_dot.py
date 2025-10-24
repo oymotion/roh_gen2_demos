@@ -5,6 +5,8 @@ class HeatMapDot:
     def init_dot_info(self):
         self.DUMMY_POINT = (-1, -1)
         self.PALM_POINT_RADIUS = 4
+        self.COLOR_SCALE = 5       # Adjust color scale to better display power color
+
         match self._sub_model:
             case 0:
                 self.POINT_RADIUS = 2
@@ -185,6 +187,7 @@ class HeatMapDot:
                 self.MAX_FORCE_SUM = 50000
                 self.MAX_FORCE = 25000
                 self.SENSOR_TYPE = 1
+                self.ARROW_SCALE = 3
                 self.LEFT_FORCE_POINT = [
                     [(37, 213)],  # thumb
                     [(295, 63), (295, 99)],  # index

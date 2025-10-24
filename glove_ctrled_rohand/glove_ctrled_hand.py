@@ -217,7 +217,7 @@ class Application:
                 if heatmap_dot.SENSOR_TYPE == TACS_3D_FORCE:
                     if 0 <= x < _width and 0 <= y < _height and finger_id != 5:
                         # nf
-                        value = data[dot_index * 3]
+                        value = data[dot_index * 3] * heatmap_dot.COLOR_SCALE
                         radius = heatmap_dot.POINT_RADIUS + round(
                             interpolate(value, 0, heatmap_dot.MAX_FORCE, 0, 10)
                         )
@@ -226,7 +226,7 @@ class Application:
                         cv2.circle(heatmap, (x, y), radius, color, -1)
 
                         # tf
-                        value = data[dot_index * 3 + 1]
+                        value = data[dot_index * 3 + 1] * heatmap_dot.COLOR_SCALE
                         length = round(
                             interpolate(value, 0, heatmap_dot.MAX_FORCE, 0, 100)
                         )
@@ -238,8 +238,8 @@ class Application:
                         value = math.radians(value)  # convert to radians
                         arrowStart = (x, y)
                         arrowEnd = (
-                            x + int(length * math.cos(value)),
-                            y + int(length * math.sin(value)),
+                            x + int(length * math.cos(value)) * heatmap_dot.ARROW_SCALE,
+                            y + int(length * math.sin(value)) * heatmap_dot.ARROW_SCALE,
                         )
                         cv2.arrowedLine(
                             heatmap, arrowStart, arrowEnd, color, 5, tipLength=0.3
@@ -248,7 +248,7 @@ class Application:
                 elif heatmap_dot.SENSOR_TYPE == TACS_DOT_MATRIX:
                     if 0 <= x < _width and 0 <= y < _height:
                         if dot_index < len(data):
-                            value = data[dot_index]
+                            value = data[dot_index] * heatmap_dot.COLOR_SCALE
                         else:
                             value = 0
                         color = interpolate(value, 0, heatmap_dot.MAX_FORCE, 120, 1)
@@ -386,7 +386,7 @@ class Application:
                         0,
                         SPEED_CONTROL_THRESHOLD,
                         0,
-                        65535,
+                        65535
                     )
                     speed[i] = clamp(round(temp), 0, 65535)
 
