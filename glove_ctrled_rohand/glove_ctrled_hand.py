@@ -297,7 +297,7 @@ class Application:
         heatmap_dot.init_dot_info()
 
         # connect to Modbus device
-        client = ModbusSerialClient(self.find_comport("CH340"), FramerType.RTU, 115200)
+        client = ModbusSerialClient(self.find_comport("CH340") or self.find_comport("USB"), FramerType.RTU, 115200)
         if not client.connect():
             print("Failed to connect to Modbus device")
             exit(-1)

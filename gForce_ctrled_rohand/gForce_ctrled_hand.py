@@ -119,7 +119,7 @@ class Application:
     async def main(self):
         gforce_device = gforce.GForce(DEV_NAME_PREFIX, DEV_MIN_RSSI)
 
-        client = ModbusSerialClient(self.find_comport("CH340"), FramerType.RTU, 115200)
+        client = ModbusSerialClient(self.find_comport("CH340") or self.find_comport("USB"), FramerType.RTU, 115200)
         if not client.connect():
             print("Failed to connect to Modbus device")
             exit(-1)
