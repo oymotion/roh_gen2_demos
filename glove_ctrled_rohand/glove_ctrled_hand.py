@@ -127,7 +127,7 @@ class Application:
         # Create a window with adjustable size
         cv2.namedWindow("Heatmap", cv2.WINDOW_NORMAL)
 
-        if hand_type == 0:
+        if hand_type == 0 or '0':
             pic_path = "/pic/force_left.png"
             _force_point_location = heatmap_dot.LEFT_FORCE_POINT
         else:
@@ -217,7 +217,7 @@ class Application:
                 if heatmap_dot.SENSOR_TYPE == TACS_3D_FORCE:
                     if 0 <= x < _width and 0 <= y < _height and finger_id != 5:
                         # nf
-                        value = data[dot_index * 3] * heatmap_dot.COLOR_SCALE
+                        value = data[dot_index * 3]
                         radius = heatmap_dot.POINT_RADIUS + round(
                             interpolate(value, 0, heatmap_dot.MAX_FORCE, 0, 10)
                         )
@@ -226,7 +226,7 @@ class Application:
                         cv2.circle(heatmap, (x, y), radius, color, -1)
 
                         # tf
-                        value = data[dot_index * 3 + 1] * heatmap_dot.COLOR_SCALE
+                        value = data[dot_index * 3 + 1]
                         length = round(
                             interpolate(value, 0, heatmap_dot.MAX_FORCE, 0, 100)
                         )
@@ -238,8 +238,8 @@ class Application:
                         value = math.radians(value)  # convert to radians
                         arrowStart = (x, y)
                         arrowEnd = (
-                            x + int(length * math.cos(value)) * heatmap_dot.ARROW_SCALE,
-                            y + int(length * math.sin(value)) * heatmap_dot.ARROW_SCALE,
+                            x + int(length * math.cos(value)),
+                            y + int(length * math.sin(value)),
                         )
                         cv2.arrowedLine(
                             heatmap, arrowStart, arrowEnd, color, 5, tipLength=0.3
@@ -248,7 +248,7 @@ class Application:
                 elif heatmap_dot.SENSOR_TYPE == TACS_DOT_MATRIX:
                     if 0 <= x < _width and 0 <= y < _height:
                         if dot_index < len(data):
-                            value = data[dot_index] * heatmap_dot.COLOR_SCALE
+                            value = data[dot_index]
                         else:
                             value = 0
                         color = interpolate(value, 0, heatmap_dot.MAX_FORCE, 120, 1)
@@ -297,7 +297,7 @@ class Application:
         heatmap_dot.init_dot_info()
 
         # connect to Modbus device
-        client = ModbusSerialClient(self.find_comport("CH340") or self.find_comport("USB"), FramerType.RTU, 115200)
+        client = ModbusSerialClient(self.find_comport("CH340"), FramerType.RTU, 115200)
         if not client.connect():
             print("Failed to connect to Modbus device")
             exit(-1)
@@ -317,6 +317,10 @@ class Application:
             self.img_init(hand_type, heatmap_dot)  # choose left hand
             _height, _width = _force_img.shape[:2]
 
+            # reset force
+            if not self.write_registers(client, ROH_RESET_FORCE, 1):
+                print("Failed to reset force")
+
         if self.find_comport("STM Serial") or self.find_comport("串行设备"):
             glove_usb = True
 
@@ -325,9 +329,6 @@ class Application:
         prev_dir = [0 for _ in range(NUM_FINGERS)]
         pos_input = PosInput()
 
-        # reset force
-        if not self.write_registers(client, ROH_RESET_FORCE, 1):
-            print("Failed to reset force")
 
         if not await pos_input.start():
             print("Failed to initialize, exit.")
@@ -386,7 +387,7 @@ class Application:
                         0,
                         SPEED_CONTROL_THRESHOLD,
                         0,
-                        65535
+                        65535,
                     )
                     speed[i] = clamp(round(temp), 0, 65535)
 
