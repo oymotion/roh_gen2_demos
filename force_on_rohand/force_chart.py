@@ -321,7 +321,8 @@ def main():
     global _width, _height
 
     # sub_model = 0
-    heatmap_dot = HeatMapDot(FORCE_TYPE)
+    force_type = int(input("select force type: DOT_MATRIX(0) or 3D_FORCE(1)"))
+    heatmap_dot = HeatMapDot(force_type)
     heatmap_dot.init_dot_info()
 
     start_time = time.time()

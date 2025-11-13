@@ -18,13 +18,6 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from common.roh_registers_v2 import *
 from common.heat_map_dot import *
 
-# Choose input device. ONLY ONE of the following should be uncommented.
-# Uncomment following line to use BLE Glove
-# from pos_input_ble_glove import PosInputBleGlove as PosInput
-
-# Or
-# Uncomment following line to use USB Glove
-from pos_input_usb_glove import PosInputUsbGlove as PosInput
 
 
 # ROHand configuration
@@ -127,7 +120,7 @@ class Application:
         # Create a window with adjustable size
         cv2.namedWindow("Heatmap", cv2.WINDOW_NORMAL)
 
-        if hand_type == 0 or '0':
+        if hand_type == 0 or "0":
             pic_path = "/pic/force_left.png"
             _force_point_location = heatmap_dot.LEFT_FORCE_POINT
         else:
@@ -138,9 +131,7 @@ class Application:
         _force_img = cv2.imread(image_path)
 
         if _force_img is None:
-            raise ValueError(
-                "Failed to load image, please check the path"
-            )
+            raise ValueError("Failed to load image, please check the path")
 
     def data_reading(self, client, heatmap_dot):
         """
@@ -153,18 +144,14 @@ class Application:
             # Fingers force data acquisition
             for i in range(NUM_FINGERS - 1):
                 reg_cnt = heatmap_dot.FORCE_VALUE_LENGTH[i]
-                resp = self.read_registers(
-                    client, ROH_FINGER_FORCE_EX0 + i * FORCE_GROUP_SIZE, reg_cnt
-                )
+                resp = self.read_registers(client, ROH_FINGER_FORCE_EX0 + i * FORCE_GROUP_SIZE, reg_cnt)
 
                 if resp is not None and len(resp) == reg_cnt:
                     val = []
 
                     if heatmap_dot.SENSOR_TYPE == TACS_3D_FORCE:
                         for j in range(reg_cnt):
-                            val = ((resp[j] & 0xFF) << 8) | (
-                                (resp[j] >> 8) & 0xFF
-                            )
+                            val = ((resp[j] & 0xFF) << 8) | ((resp[j] >> 8) & 0xFF)
                             # Avoid invalid data
                             if val < 65535:
                                 finger_force[i].append(val)
@@ -179,9 +166,7 @@ class Application:
                         finger_force[i] = val
             # Palm force data acquisition
             reg_cnt = heatmap_dot.FORCE_VALUE_LENGTH[PALM_INDEX]
-            resp = self.read_registers(
-                client, ROH_FINGER_FORCE_EX0 + PALM_INDEX * FORCE_GROUP_SIZE, reg_cnt
-            )
+            resp = self.read_registers(client, ROH_FINGER_FORCE_EX0 + PALM_INDEX * FORCE_GROUP_SIZE, reg_cnt)
 
             if resp is not None and len(resp) == reg_cnt:
                 val = []
@@ -217,19 +202,15 @@ class Application:
                 if heatmap_dot.SENSOR_TYPE == TACS_3D_FORCE:
                     if 0 <= x < _width and 0 <= y < _height and finger_id != 5:
                         # nf
-                        value = data[dot_index * 3]
-                        radius = heatmap_dot.POINT_RADIUS + round(
-                            interpolate(value, 0, heatmap_dot.MAX_FORCE, 0, 10)
-                        )
+                        value = data[dot_index * 3] * heatmap_dot.COLOR_SCALE
+                        radius = heatmap_dot.POINT_RADIUS + round(interpolate(value, 0, heatmap_dot.MAX_FORCE, 0, 10))
                         color = interpolate(value, 0, heatmap_dot.MAX_FORCE, 120, 1)
                         color = clamp(color, 1, 120)
                         cv2.circle(heatmap, (x, y), radius, color, -1)
 
                         # tf
-                        value = data[dot_index * 3 + 1]
-                        length = round(
-                            interpolate(value, 0, heatmap_dot.MAX_FORCE, 0, 100)
-                        )
+                        value = data[dot_index * 3 + 1] * heatmap_dot.COLOR_SCALE
+                        length = round(interpolate(value, 0, heatmap_dot.MAX_FORCE, 0, 120))
                         color = interpolate(value, 0, heatmap_dot.MAX_FORCE, 120, 1)
                         color = clamp(color, 1, 120)
 
@@ -238,48 +219,34 @@ class Application:
                         value = math.radians(value)  # convert to radians
                         arrowStart = (x, y)
                         arrowEnd = (
-                            x + int(length * math.cos(value)),
-                            y + int(length * math.sin(value)),
+                            x + int(length * math.cos(value) * heatmap_dot.ARROW_SCALE),
+                            y + int(length * math.sin(value) * heatmap_dot.ARROW_SCALE)
                         )
-                        cv2.arrowedLine(
-                            heatmap, arrowStart, arrowEnd, color, 5, tipLength=0.3
-                        )
+                        cv2.arrowedLine(heatmap, arrowStart, arrowEnd, color, 5, tipLength=0.3)
 
                 elif heatmap_dot.SENSOR_TYPE == TACS_DOT_MATRIX:
                     if 0 <= x < _width and 0 <= y < _height:
                         if dot_index < len(data):
-                            value = data[dot_index]
+                            value = data[dot_index] * heatmap_dot.COLOR_SCALE
                         else:
                             value = 0
                         color = interpolate(value, 0, heatmap_dot.MAX_FORCE, 120, 1)
                         color = clamp(color, 1, 120)
 
                         if finger_id == 5:
-                            cv2.circle(
-                                heatmap,
-                                (x, y),
-                                heatmap_dot.PALM_POINT_RADIUS,
-                                color,
-                                -1,
-                            )
+                            cv2.circle(heatmap, (x, y), heatmap_dot.PALM_POINT_RADIUS, color, -1)
                         else:
-                            cv2.circle(
-                                heatmap, (x, y), heatmap_dot.POINT_RADIUS, color, -1
-                            )
+                            cv2.circle(heatmap, (x, y), heatmap_dot.POINT_RADIUS, color, -1)
 
         heatmap_colored = cv2.applyColorMap(heatmap, cv2.COLORMAP_HSV)
-        heatmap_colored = cv2.resize(
-            heatmap_colored, (_force_img.shape[1], _force_img.shape[0])
-        )
+        heatmap_colored = cv2.resize(heatmap_colored, (_force_img.shape[1], _force_img.shape[0]))
         mask = heatmap > 0
         mask = np.uint8(mask * 255)
 
         if _force_img is not None and heatmap_colored is not None:
             result = _force_img.copy()
             try:
-                result[mask > 0] = cv2.addWeighted(
-                    _force_img[mask > 0], 0.2, heatmap_colored[mask > 0], 0.8, 0
-                )
+                result[mask > 0] = cv2.addWeighted(_force_img[mask > 0], 0.2, heatmap_colored[mask > 0], 0.8, 0)
             except Exception as e:
                 print(f"Error when blending images: {e}")
             else:
@@ -292,9 +259,11 @@ class Application:
         glove_usb = False
         force_sensor = False
 
-        # sub_model = 0
-        heatmap_dot = HeatMapDot(FORCE_TYPE)
-        heatmap_dot.init_dot_info()
+        if self.find_comport("STM Serial") or self.find_comport("串行设备"):
+            glove_usb = True
+            from pos_input_usb_glove import PosInputUsbGlove as PosInput
+        else:
+            from pos_input_ble_glove import PosInputBleGlove as PosInput
 
         # connect to Modbus device
         client = ModbusSerialClient(self.find_comport("CH340"), FramerType.RTU, 115200)
@@ -305,14 +274,17 @@ class Application:
         resp = self.read_registers(client, ROH_HW_VERSION, 1)
 
         if resp is None:
-            print(
-                "Failed to read hardware version or unsupported hardware type"
-            )
+            print("Failed to read hardware version or unsupported hardware type")
             exit(-1)
         elif resp[0] == ROH_HARDWARE_TYPE_AP:
             force_sensor = True
 
-        if force_sensor:
+        if force_sensor and glove_usb:
+            # sub_model = 0
+            force_type = int(input("select force type: DOT_MATRIX(0) or 3D_FORCE(1)"))
+
+            heatmap_dot = HeatMapDot(force_type)
+            heatmap_dot.init_dot_info()
             hand_type = input("select left hand(0) or right hand(1)")
             self.img_init(hand_type, heatmap_dot)  # choose left hand
             _height, _width = _force_img.shape[:2]
@@ -321,14 +293,10 @@ class Application:
             if not self.write_registers(client, ROH_RESET_FORCE, 1):
                 print("Failed to reset force")
 
-        if self.find_comport("STM Serial") or self.find_comport("串行设备"):
-            glove_usb = True
-
         prev_finger_data = [65535 for _ in range(NUM_FINGERS)]
         finger_data = [0 for _ in range(NUM_FINGERS)]
         prev_dir = [0 for _ in range(NUM_FINGERS)]
         pos_input = PosInput()
-
 
         if not await pos_input.start():
             print("Failed to initialize, exit.")
@@ -374,9 +342,7 @@ class Application:
                     curr_pos = resp
                 else:
                     print("Failed to send read pos command")
-                    print(
-                        f"read_registers({ROH_FINGER_POS0}, {NUM_FINGERS}, {NODE_ID}) returned {resp})"
-                    )
+                    print(f"read_registers({ROH_FINGER_POS0}, {NUM_FINGERS}, {NODE_ID}) returned {resp})")
                     continue
 
                 speed = [0 for _ in range(NUM_FINGERS)]
@@ -399,7 +365,7 @@ class Application:
                 if not self.write_registers(client, ROH_FINGER_POS_TARGET0, pos):
                     print("Failed to set pos")
 
-            if force_sensor:
+            if force_sensor and glove_usb:
                 self.data_reading(client, heatmap_dot)
                 finger_force = []
 

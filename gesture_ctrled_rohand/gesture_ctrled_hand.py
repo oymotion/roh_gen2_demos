@@ -12,7 +12,7 @@ from pymodbus.exceptions import ModbusException
 from serial.tools import list_ports
 from queue import Queue
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from common.roh_registers_v2 import *
 from common.heat_map_dot import *
@@ -59,7 +59,7 @@ def img_init(hand_type, heatmap_dot):
     # Create a window with adjustable size
     cv2.namedWindow("Heatmap", cv2.WINDOW_NORMAL)
 
-    if hand_type == "0":
+    if hand_type == '0':
         pic_path = "/gestures/force_left.png"
         _force_point_location = heatmap_dot.LEFT_FORCE_POINT
     else:
@@ -70,7 +70,9 @@ def img_init(hand_type, heatmap_dot):
     _force_img = cv2.imread(image_path)
 
     if _force_img is None:
-        raise ValueError("Failed to load image, please check the path")
+        raise ValueError(
+            "Failed to load image, please check the path"
+        )
 
     _height, _width = _force_img.shape[:2]
 
@@ -137,14 +139,18 @@ def get_finger_force(client, heatmap_dot):
         # Fingers force data acquisition
         for i in range(NUM_FINGERS - 1):
             reg_cnt = heatmap_dot.FORCE_VALUE_LENGTH[i]
-            resp = read_registers(client, ROH_FINGER_FORCE_EX0 + i * FORCE_GROUP_SIZE, reg_cnt)
+            resp = read_registers(
+                client, ROH_FINGER_FORCE_EX0 + i * FORCE_GROUP_SIZE, reg_cnt
+            )
 
             if resp is not None and len(resp) == reg_cnt:
                 val = []
 
                 if heatmap_dot.SENSOR_TYPE == TACS_3D_FORCE:
                     for j in range(reg_cnt):
-                        val = ((resp[j] & 0xFF) << 8) | ((resp[j] >> 8) & 0xFF)
+                        val = ((resp[j] & 0xFF) << 8) | (
+                            (resp[j] >> 8) & 0xFF
+                        )
 
                         # Avoid invalid data
                         if val < 65535:
@@ -152,11 +158,15 @@ def get_finger_force(client, heatmap_dot):
                         else:
                             finger_force[i].append(0)
                     # print(finger_force)
-                    finger_force_sum[i] = math.sqrt(finger_force[i][0] ** 2 + finger_force[i][1] ** 2)
+                    finger_force_sum[i] = math.sqrt(
+                        finger_force[i][0] ** 2 + finger_force[i][1] ** 2
+                    )
 
                     # print(finger_force_sum[i])
                     if reg_cnt >= 6:
-                        finger_force_sum[i] += math.sqrt(finger_force[i][3] ** 2 + finger_force[i][4] ** 2)
+                        finger_force_sum[i] += math.sqrt(
+                            finger_force[i][3] ** 2 + finger_force[i][4] ** 2
+                        )
                 elif heatmap_dot.SENSOR_TYPE == TACS_DOT_MATRIX:
                     for j in range(reg_cnt):
                         val.append((resp[j] >> 8) & 0xFF)
@@ -166,7 +176,9 @@ def get_finger_force(client, heatmap_dot):
                     finger_force[i] = val
         # Palm force data acquisition
         reg_cnt = heatmap_dot.FORCE_VALUE_LENGTH[PALM_INDEX]
-        resp = read_registers(client, ROH_FINGER_FORCE_EX0 + PALM_INDEX * FORCE_GROUP_SIZE, reg_cnt)
+        resp = read_registers(
+            client, ROH_FINGER_FORCE_EX0 + PALM_INDEX * FORCE_GROUP_SIZE, reg_cnt
+        )
 
         if resp is not None and len(resp) == reg_cnt:
             val = []
@@ -359,12 +371,9 @@ def main():
     first_set = [True for _ in range(NUM_FINGERS - 1)]
     force_control_mode = False
 
-    # sub_model = 0
-    heatmap_dot = HeatMapDot(FORCE_TYPE)
-    heatmap_dot.init_dot_info()
-
     force_sensor = False
-    client = ModbusSerialClient(find_comport("CH340") or find_comport("USB"), FramerType.RTU, 115200)
+    client = ModbusSerialClient(find_comport("CH340"), FramerType.RTU, 115200)
+    
     if not client.connect():
         print("Failed to connect to Modbus device")
         exit(-1)
@@ -380,6 +389,11 @@ def main():
         force_sensor = True
 
     if force_sensor:
+        # sub_model = 0
+        force_type = int(input("select force type: DOT_MATRIX(0) or 3D_FORCE(1)"))
+        heatmap_dot = HeatMapDot(force_type)
+        heatmap_dot.init_dot_info()
+
         hand_type = input("select left hand(0) or right hand(1)")
         print("Press '1' to enter force control mode, '2' to exit force control mode, 'q' to exit program\n")
         img_init(hand_type, heatmap_dot)
