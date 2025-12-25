@@ -39,7 +39,8 @@ gesture_queue = queue.Queue(maxsize=NUM_FINGERS)
 image_queue = queue.Queue(maxsize=1)
 _video = None
 _detector = None
-
+_show_gesture_image = True
+_show_try_gesture_text = True
 
 def interpolate(n, from_min, from_max, to_min, to_max):
     return (n - from_min) / (from_max - from_min) * (to_max - to_min) + to_min
@@ -235,6 +236,15 @@ def update_heatmap(finger_force, heatmap_dot):
                         y + int(length * math.sin(value) * heatmap_dot.ARROW_SCALE)
                     )
                     cv2.arrowedLine(heatmap, arrowStart, arrowEnd, color, 5, tipLength=0.3)
+                else:
+                    if dot_index < len(data):
+                        value = data[dot_index] * heatmap_dot.COLOR_SCALE
+                    else:
+                        value = 0
+                    color = interpolate(value, 0, 200, 120, 1)
+                    color = clamp(color, 1, 120)
+                    cv2.circle(heatmap, (x, y), heatmap_dot.PALM_POINT_RADIUS, color, -1)
+
 
             elif heatmap_dot.SENSOR_TYPE == TACS_DOT_MATRIX:
                 if 0 <= x < _width and 0 <= y < _height:
@@ -270,6 +280,8 @@ def camera_thread():
     Camera processing thread: Real-time. Continuously capture images from the camera and recognize gestures through a hand detector,
     And place the recognized gesture information into the queue
     """
+    global _show_gesture_image, _show_try_gesture_text
+
     timer = 0
     interval = 10
     original_thumb_pos = 0
@@ -286,6 +298,7 @@ def camera_thread():
             lmlist = hand[0]
 
             if lmlist and lmlist[0]:
+                _show_try_gesture_text = False
                 try:
                     finger_up = _detector.fingersUp(lmlist[0])
 
@@ -310,14 +323,15 @@ def camera_thread():
                     gesture_pic = cv2.imread(file_path + "/gestures/5.png")
             else:
                 gesture = [0, 0, 0, 0, 0, 0]
+                _show_try_gesture_text = True
 
         if gesture_pic.any():
             gesture_pic = cv2.resize(gesture_pic, (161, 203))
-            img[0:203, 0:161] = gesture_pic
+            if _show_gesture_image:
+                img[0:203, 0:161] = gesture_pic
 
         # To avoid finger interference
         if gesture[0] > 0 and gesture[5] > 0:
-            print(timer)
 
             if prev_index_pos != gesture[1]:
                 timer = 0
@@ -365,6 +379,8 @@ def init_video_and_detector():
 
 
 def main():
+    global _show_gesture_image, _show_try_gesture_text
+
     prev_gesture = [0, 0, 0, 0, 0, 0]
     finger_force, finger_force_sum = [], []
     # Flag that indicates setting force target for the first time, to avoid repeated setting
@@ -389,9 +405,18 @@ def main():
         force_sensor = True
 
     if force_sensor:
-        # sub_model = 0
-        force_type = int(input("select force type: DOT_MATRIX(0) or 3D_FORCE(1)"))
-        heatmap_dot = HeatMapDot(force_type)
+        sub_model = None
+        resp = read_registers(client, ROH_MANU_DATA0, 1)
+        if resp is not None:
+            sub_model = (resp[0] >> 8) & 0xFF
+            hw_modify_version = (resp[0]) & 0xFF
+            print(f"sub_model: {sub_model}, hw_modify_version: {hw_modify_version}")
+        else:
+            print("Read manufactory data failed, please update firmware.")
+            print("Now you need to manually input values")
+            sub_model = int(input("select force type: DOT_MATRIX(0) or 3D_FORCE(1)"))
+
+        heatmap_dot = HeatMapDot(sub_model)
         heatmap_dot.init_dot_info()
 
         hand_type = input("select left hand(0) or right hand(1)")
@@ -411,7 +436,8 @@ def main():
 
         if not image_queue.empty():
             img = image_queue.get()
-            cv2.putText(img, "Try with gestures", (16, 272), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 5)
+            if _show_try_gesture_text:
+                cv2.putText(img, "Try with gestures", (16, 272), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 5)
             cv2.imshow("Video", img)
 
         # Choose different control mode
@@ -458,6 +484,10 @@ def main():
                 print("Use position control mode")
                 for i in range(NUM_FINGERS - 1):
                     write_registers(client, ROH_FINGER_FORCE_TARGET0 + i, 0)
+            elif key == ord("3"):
+                _show_gesture_image = True
+            elif key == ord("4"):
+                _show_gesture_image = False
 
         if key == ord("q"):
             break

@@ -223,6 +223,15 @@ class Application:
                             y + int(length * math.sin(value) * heatmap_dot.ARROW_SCALE)
                         )
                         cv2.arrowedLine(heatmap, arrowStart, arrowEnd, color, 5, tipLength=0.3)
+                    else:
+                        if dot_index < len(data):
+                            value = data[dot_index] * heatmap_dot.COLOR_SCALE
+                        else:
+                            value = 0
+                        color = interpolate(value, 0, 200, 120, 1)
+                        color = clamp(color, 1, 120)
+                        cv2.circle(heatmap, (x, y), heatmap_dot.PALM_POINT_RADIUS, color, -1)
+
 
                 elif heatmap_dot.SENSOR_TYPE == TACS_DOT_MATRIX:
                     if 0 <= x < _width and 0 <= y < _height:
@@ -280,11 +289,20 @@ class Application:
             force_sensor = True
 
         if force_sensor and glove_usb:
-            # sub_model = 0
-            force_type = int(input("select force type: DOT_MATRIX(0) or 3D_FORCE(1)"))
+            sub_model = None
+            resp = self.read_registers(client, ROH_MANU_DATA0, 1)
+            if resp is not None:
+                sub_model = (resp[0] >> 8) & 0xFF
+                hw_modify_version = (resp[0]) & 0xFF
+                print(f"sub_model: {sub_model}, hw_modify_version: {hw_modify_version}")
+            else:
+                print("Read manufactory data failed, please update firmware.")
+                print("Now you need to manually input values")
+                sub_model = int(input("select force type: DOT_MATRIX(0) or 3D_FORCE(1)"))
 
-            heatmap_dot = HeatMapDot(force_type)
+            heatmap_dot = HeatMapDot(sub_model)
             heatmap_dot.init_dot_info()
+
             hand_type = input("select left hand(0) or right hand(1)")
             self.img_init(hand_type, heatmap_dot)  # choose left hand
             _height, _width = _force_img.shape[:2]
