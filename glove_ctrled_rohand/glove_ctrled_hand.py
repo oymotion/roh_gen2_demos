@@ -268,7 +268,7 @@ class Application:
         glove_usb = False
         force_sensor = False
 
-        if self.find_comport("STM Serial") or self.find_comport("串行设备"):
+        if self.find_comport("STM Serial") or self.find_comport("串行设备")  or self.find_comport("USB"):
             glove_usb = True
             from pos_input_usb_glove import PosInputUsbGlove as PosInput
         else:
