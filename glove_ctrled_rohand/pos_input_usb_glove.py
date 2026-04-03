@@ -20,6 +20,8 @@ DATA_START_BYTE_NUM = 1
 # ROHand configuration
 NUM_FINGERS = 6
 
+KEYWORDS = ["串行设备", "STM", "USB"]
+
 
 # OHand bus context
 class PosInputUsbGlove:
@@ -35,15 +37,29 @@ class PosInputUsbGlove:
             Timeout in in milliseconds
         """
         # serial init
-        self.serial_port = serial.Serial(
-            port=self.find_comport("串行设备") or self.find_comport("STM") or self.find_comport("USB"),
-            baudrate=115200,
-            bytesize=serial.EIGHTBITS,
-            parity=serial.PARITY_NONE,
-            stopbits=serial.STOPBITS_ONE,
-            timeout=0.1,
-        )
-        print(f"手套使用端口:\nGlove using serial port: {self.serial_port.name}")
+        candidate_ports = self.find_comports(KEYWORDS)
+        if not candidate_ports:
+            raise RuntimeError("未找到任何手套对应的串口设备")
+
+        self.serial_port = None
+        for port in candidate_ports:
+            try:
+                self.serial_port = serial.Serial(
+                    port=port,
+                    baudrate=115200,
+                    bytesize=serial.EIGHTBITS,
+                    parity=serial.PARITY_NONE,
+                    stopbits=serial.STOPBITS_ONE,
+                    timeout=0.1,
+                )
+                print(f"成功打开手套端口: {self.serial_port.name}")
+                break
+            except serial.SerialException as e:
+                print(f"glove 端口 {port} 打开失败: {e}，尝试下一个...")
+                continue
+
+            if self.serial_port is None:
+                raise RuntimeError("所有匹配的手套端口均无法打开（可能已被占用）")
 
         self.timeout = 2000
         self.is_whole_packet = False
@@ -185,24 +201,27 @@ class PosInputUsbGlove:
         if resp_bytes is not None:
             packet_byte_count = self.packet_data[DATA_CNT_BYTE_NUM]
             resp_bytes.clear()
-            resp_data = self.packet_data[DATA_START_BYTE_NUM : DATA_START_BYTE_NUM + packet_byte_count]
+            resp_data = self.packet_data[DATA_START_BYTE_NUM: DATA_START_BYTE_NUM + packet_byte_count]
             for v in resp_data:
                 resp_bytes.append(v)
 
         self.is_whole_packet = False
         return True
 
-    def find_comport(self, port_name):
+    def find_comports(self, keywords):
         """
         Find available serial port automatically
         :param port_name: Characterization of the port description, such as "CH340"
         :return: Comport of device if successful, None otherwise
         """
         ports = list_ports.comports()
+        matches = []
         for port in ports:
-            if port_name in port.description:
-                return port.device
-        return None
+            for kw in keywords:
+                if kw in port.description:
+                    matches.append(port.device)
+                    break
+        return matches
 
     async def start(self) -> bool:
         # 区分左右手套
@@ -220,7 +239,8 @@ class PosInputUsbGlove:
         else:
             print("使用通用手套\nUse general glove")
 
-        print("校正模式，请执行握拳和张开动作若干次\nCalibrating mode, please perform a fist and open action several times")
+        print(
+            "校正模式，请执行握拳和张开动作若干次\nCalibrating mode, please perform a fist and open action several times")
 
         for _ in range(512):
             self.get_data(self._glove_raw_data)
@@ -261,7 +281,8 @@ class PosInputUsbGlove:
             # 处理数据
             for i in range(int(len(self._glove_raw_data) / 2)):
                 glove_data.append(
-                    ((self._glove_raw_data[self._offset + i * 2]) | (self._glove_raw_data[self._offset + i * 2 + 1] << 8))
+                    ((self._glove_raw_data[self._offset + i * 2]) | (
+                                self._glove_raw_data[self._offset + i * 2 + 1] << 8))
                 )  # 每两个字节为一个数据
 
             glove_data_sum = [0 for _ in range(len(glove_data))]

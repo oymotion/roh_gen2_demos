@@ -73,6 +73,21 @@ class Application:
                 return port.device
         return None
 
+    def find_comports(self, keywords):
+        """
+        Find available serial port automatically
+        :param port_name: Characterization of the port description, such as "CH340"
+        :return: Comport of device if successful, None otherwise
+        """
+        ports = list_ports.comports()
+        matches = []
+        for port in ports:
+            for kw in keywords:
+                if kw in port.description:
+                    matches.append(port.device)
+                    break
+        return matches
+
     def write_registers(self, client, address, values):
         """
         Write data to Modbus device.
@@ -120,7 +135,7 @@ class Application:
         # Create a window with adjustable size
         cv2.namedWindow("Heatmap", cv2.WINDOW_NORMAL)
 
-        if hand_type == 0 or "0":
+        if hand_type == 0 or hand_type ==  "0":
             pic_path = "/pic/force_left.png"
             _force_point_location = heatmap_dot.LEFT_FORCE_POINT
         else:
@@ -275,10 +290,21 @@ class Application:
             from pos_input_ble_glove import PosInputBleGlove as PosInput
 
         # connect to Modbus device
-        client = ModbusSerialClient(self.find_comport("CH340"), FramerType.RTU, 115200)
-        if not client.connect():
-            print("Failed to connect to Modbus device")
-            exit(-1)
+        candidate_clients = self.find_comports(["CH340"])
+        client = None
+
+        print(f"rohand candidate_clients: {candidate_clients}")
+
+        for candidate_client in candidate_clients:
+            print(f"rohand current_client: {candidate_client}")
+            try:
+                client = ModbusSerialClient(candidate_client, FramerType.RTU, 115200)
+                if not client.connect():
+                    print(f"Failed to connect to Modbus device, try continue...")
+                else:
+                    break
+            except Exception as e:
+                continue
 
         resp = self.read_registers(client, ROH_HW_VERSION, 1)
 
