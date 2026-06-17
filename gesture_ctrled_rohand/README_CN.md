@@ -7,7 +7,7 @@
 进入演示项目目录，例如：
 
 ```SHELL
-cd glove_ctrled_rohand
+cd gesture_ctrled_rohand
 ```
 
 安装依赖的python库：

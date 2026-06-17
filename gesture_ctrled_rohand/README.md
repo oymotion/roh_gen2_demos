@@ -7,7 +7,7 @@
 * Navigate to the demonstration project directory, for example:
 
 ```SHELL
-cd glove_ctrled_rohand
+cd gesture_ctrled_rohand
 ```
 
 * Install the required Python libraries:

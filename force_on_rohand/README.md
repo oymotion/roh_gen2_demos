@@ -18,7 +18,7 @@ pip install -r requirements.txt
 
 ## 运行
 
-打开`force_on_rohand.py`并修改设备地址，例如：
+打开`force_chart.py`并修改设备地址，例如：
 
 ```python
 NODE_ID = 2
@@ -27,7 +27,7 @@ NODE_ID = 2
 运行：
 
 ```python
-python force_on_rohand.py
+python force_chart.py
 ```
 
 按'q'退出。
