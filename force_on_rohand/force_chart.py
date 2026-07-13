@@ -158,7 +158,7 @@ def data_reading(client, heatmap_dot):
                     for j in range(reg_cnt):
                         val.append((resp[j] >> 8) & 0xFF)
                         val.append(resp[j] & 0xFF)
-                        finger_force_sum[i] += val[j]
+                    finger_force_sum[i] += sum(val)
                     # print(val)
                     finger_force[i] = val
         # Palm force data acquisition
@@ -170,7 +170,7 @@ def data_reading(client, heatmap_dot):
             for i in range(reg_cnt):
                 val.append((resp[i] >> 8) & 0xFF)
                 val.append(resp[i] & 0xFF)
-                finger_force_sum[PALM_INDEX] += val[i]
+            finger_force_sum[PALM_INDEX] += sum(val)
             # print(val)
             finger_force[PALM_INDEX] = val
 
