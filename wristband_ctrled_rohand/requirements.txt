@@ -1,0 +1,7 @@
+bleak==0.22.2
+numpy==1.26.4
+pymodbus==3.7.2
+pyserial==3.5
+sensor-sdk
+scipy
+matplotlib
