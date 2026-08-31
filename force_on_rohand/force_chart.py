@@ -255,8 +255,8 @@ def update_heatmap(finger_force, heatmap_dot):
                     value = math.radians(value)  # convert to radians
                     arrowStart = (x, y)
                     arrowEnd = (
-                        x + int(length * math.cos(value) * heatmap_dot.ARROW_SCALE),
-                        y + int(length * math.sin(value) * heatmap_dot.ARROW_SCALE)
+                        clamp(x + int(length * math.cos(value) * heatmap_dot.ARROW_SCALE), 0, _width - 1),
+                        clamp(y + int(length * math.sin(value) * heatmap_dot.ARROW_SCALE), 0, _height - 1)
                     )
                     cv2.arrowedLine(heatmap, arrowStart, arrowEnd, color, 5, tipLength=0.3)
                 else:
