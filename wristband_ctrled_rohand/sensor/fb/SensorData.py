@@ -34,102 +34,109 @@ class SensorData(object):
         return None
 
     # SensorData
-    def DataType(self):
+    def DeviceName(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(6))
+        if o != 0:
+            return self._tab.String(o + self._tab.Pos)
+        return None
+
+    # SensorData
+    def DataType(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.Uint8Flags, o + self._tab.Pos)
         return 0
 
     # SensorData
     def LastPackageCounter(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(8))
-        if o != 0:
-            return self._tab.Get(flatbuffers.number_types.Int32Flags, o + self._tab.Pos)
-        return 0
-
-    # SensorData
-    def LastPackageIndex(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(10))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.Int32Flags, o + self._tab.Pos)
         return 0
 
     # SensorData
-    def LostPackageCount(self):
+    def LastPackageIndex(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(12))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.Int32Flags, o + self._tab.Pos)
         return 0
 
     # SensorData
-    def ResolutionBits(self):
+    def LostPackageCount(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(14))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.Int32Flags, o + self._tab.Pos)
         return 0
 
     # SensorData
-    def ResolutionSigned(self):
+    def ResolutionBits(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(16))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.Int32Flags, o + self._tab.Pos)
         return 0
 
     # SensorData
-    def SampleRate(self):
+    def ResolutionSigned(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(18))
+        if o != 0:
+            return self._tab.Get(flatbuffers.number_types.Int32Flags, o + self._tab.Pos)
+        return 0
+
+    # SensorData
+    def SampleRate(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(20))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.Float32Flags, o + self._tab.Pos)
         return 0.0
 
     # SensorData
     def ChannelCount(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(20))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(22))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.Int32Flags, o + self._tab.Pos)
         return 0
 
     # SensorData
     def ChannelMask(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(22))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(24))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.Uint64Flags, o + self._tab.Pos)
         return 0
 
     # SensorData
     def MinPackageSampleCount(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(24))
-        if o != 0:
-            return self._tab.Get(flatbuffers.number_types.Int32Flags, o + self._tab.Pos)
-        return 0
-
-    # SensorData
-    def PackageSampleCount(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(26))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.Int32Flags, o + self._tab.Pos)
         return 0
 
     # SensorData
-    def PackageIndexLength(self):
+    def PackageSampleCount(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(28))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.Int32Flags, o + self._tab.Pos)
         return 0
 
     # SensorData
-    def K(self):
+    def PackageIndexLength(self):
         o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(30))
+        if o != 0:
+            return self._tab.Get(flatbuffers.number_types.Int32Flags, o + self._tab.Pos)
+        return 0
+
+    # SensorData
+    def K(self):
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(32))
         if o != 0:
             return self._tab.Get(flatbuffers.number_types.Float64Flags, o + self._tab.Pos)
         return 0.0
 
     # SensorData
     def Samples(self, j):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(32))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(34))
         if o != 0:
             x = self._tab.Vector(o)
-            x += flatbuffers.number_types.UOffsetTFlags.py_type(j) * 32
+            x += flatbuffers.number_types.UOffsetTFlags.py_type(j) * 40
             from sensor.fb.Sample import Sample
             obj = Sample()
             obj.Init(self._tab.Bytes, x)
@@ -138,19 +145,19 @@ class SensorData(object):
 
     # SensorData
     def SamplesLength(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(32))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(34))
         if o != 0:
             return self._tab.VectorLen(o)
         return 0
 
     # SensorData
     def SamplesIsNone(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(32))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(34))
         return o == 0
 
     # SensorData
     def SamplesPerChannel(self, j):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(34))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(36))
         if o != 0:
             a = self._tab.Vector(o)
             return self._tab.Get(flatbuffers.number_types.Int32Flags, a + flatbuffers.number_types.UOffsetTFlags.py_type(j * 4))
@@ -158,25 +165,25 @@ class SensorData(object):
 
     # SensorData
     def SamplesPerChannelAsNumpy(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(34))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(36))
         if o != 0:
             return self._tab.GetVectorAsNumpy(flatbuffers.number_types.Int32Flags, o)
         return 0
 
     # SensorData
     def SamplesPerChannelLength(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(34))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(36))
         if o != 0:
             return self._tab.VectorLen(o)
         return 0
 
     # SensorData
     def SamplesPerChannelIsNone(self):
-        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(34))
+        o = flatbuffers.number_types.UOffsetTFlags.py_type(self._tab.Offset(36))
         return o == 0
 
 def SensorDataStart(builder):
-    builder.StartObject(16)
+    builder.StartObject(17)
 
 def Start(builder):
     SensorDataStart(builder)
@@ -187,98 +194,104 @@ def SensorDataAddDeviceMac(builder, deviceMac):
 def AddDeviceMac(builder, deviceMac):
     SensorDataAddDeviceMac(builder, deviceMac)
 
+def SensorDataAddDeviceName(builder, deviceName):
+    builder.PrependUOffsetTRelativeSlot(1, flatbuffers.number_types.UOffsetTFlags.py_type(deviceName), 0)
+
+def AddDeviceName(builder, deviceName):
+    SensorDataAddDeviceName(builder, deviceName)
+
 def SensorDataAddDataType(builder, dataType):
-    builder.PrependUint8Slot(1, dataType, 0)
+    builder.PrependUint8Slot(2, dataType, 0)
 
 def AddDataType(builder, dataType):
     SensorDataAddDataType(builder, dataType)
 
 def SensorDataAddLastPackageCounter(builder, lastPackageCounter):
-    builder.PrependInt32Slot(2, lastPackageCounter, 0)
+    builder.PrependInt32Slot(3, lastPackageCounter, 0)
 
 def AddLastPackageCounter(builder, lastPackageCounter):
     SensorDataAddLastPackageCounter(builder, lastPackageCounter)
 
 def SensorDataAddLastPackageIndex(builder, lastPackageIndex):
-    builder.PrependInt32Slot(3, lastPackageIndex, 0)
+    builder.PrependInt32Slot(4, lastPackageIndex, 0)
 
 def AddLastPackageIndex(builder, lastPackageIndex):
     SensorDataAddLastPackageIndex(builder, lastPackageIndex)
 
 def SensorDataAddLostPackageCount(builder, lostPackageCount):
-    builder.PrependInt32Slot(4, lostPackageCount, 0)
+    builder.PrependInt32Slot(5, lostPackageCount, 0)
 
 def AddLostPackageCount(builder, lostPackageCount):
     SensorDataAddLostPackageCount(builder, lostPackageCount)
 
 def SensorDataAddResolutionBits(builder, resolutionBits):
-    builder.PrependInt32Slot(5, resolutionBits, 0)
+    builder.PrependInt32Slot(6, resolutionBits, 0)
 
 def AddResolutionBits(builder, resolutionBits):
     SensorDataAddResolutionBits(builder, resolutionBits)
 
 def SensorDataAddResolutionSigned(builder, resolutionSigned):
-    builder.PrependInt32Slot(6, resolutionSigned, 0)
+    builder.PrependInt32Slot(7, resolutionSigned, 0)
 
 def AddResolutionSigned(builder, resolutionSigned):
     SensorDataAddResolutionSigned(builder, resolutionSigned)
 
 def SensorDataAddSampleRate(builder, sampleRate):
-    builder.PrependFloat32Slot(7, sampleRate, 0.0)
+    builder.PrependFloat32Slot(8, sampleRate, 0.0)
 
 def AddSampleRate(builder, sampleRate):
     SensorDataAddSampleRate(builder, sampleRate)
 
 def SensorDataAddChannelCount(builder, channelCount):
-    builder.PrependInt32Slot(8, channelCount, 0)
+    builder.PrependInt32Slot(9, channelCount, 0)
 
 def AddChannelCount(builder, channelCount):
     SensorDataAddChannelCount(builder, channelCount)
 
 def SensorDataAddChannelMask(builder, channelMask):
-    builder.PrependUint64Slot(9, channelMask, 0)
+    builder.PrependUint64Slot(10, channelMask, 0)
 
 def AddChannelMask(builder, channelMask):
     SensorDataAddChannelMask(builder, channelMask)
 
 def SensorDataAddMinPackageSampleCount(builder, minPackageSampleCount):
-    builder.PrependInt32Slot(10, minPackageSampleCount, 0)
+    builder.PrependInt32Slot(11, minPackageSampleCount, 0)
 
 def AddMinPackageSampleCount(builder, minPackageSampleCount):
     SensorDataAddMinPackageSampleCount(builder, minPackageSampleCount)
 
 def SensorDataAddPackageSampleCount(builder, packageSampleCount):
-    builder.PrependInt32Slot(11, packageSampleCount, 0)
+    builder.PrependInt32Slot(12, packageSampleCount, 0)
 
 def AddPackageSampleCount(builder, packageSampleCount):
     SensorDataAddPackageSampleCount(builder, packageSampleCount)
 
 def SensorDataAddPackageIndexLength(builder, packageIndexLength):
-    builder.PrependInt32Slot(12, packageIndexLength, 0)
+    builder.PrependInt32Slot(13, packageIndexLength, 0)
 
 def AddPackageIndexLength(builder, packageIndexLength):
     SensorDataAddPackageIndexLength(builder, packageIndexLength)
 
 def SensorDataAddK(builder, k):
-    builder.PrependFloat64Slot(13, k, 0.0)
+    builder.PrependFloat64Slot(14, k, 0.0)
 
 def AddK(builder, k):
     SensorDataAddK(builder, k)
 
 def SensorDataAddSamples(builder, samples):
-    builder.PrependUOffsetTRelativeSlot(14, flatbuffers.number_types.UOffsetTFlags.py_type(samples), 0)
+    builder.PrependUOffsetTRelativeSlot(15, flatbuffers.number_types.UOffsetTFlags.py_type(samples), 0)
 
 def AddSamples(builder, samples):
     SensorDataAddSamples(builder, samples)
 
 def SensorDataStartSamplesVector(builder, numElems):
-    return builder.StartVector(32, numElems, 4)
+    return builder.StartVector(40, numElems, 8)
 
 def StartSamplesVector(builder, numElems):
     return SensorDataStartSamplesVector(builder, numElems)
 
 def SensorDataAddSamplesPerChannel(builder, samplesPerChannel):
-    builder.PrependUOffsetTRelativeSlot(15, flatbuffers.number_types.UOffsetTFlags.py_type(samplesPerChannel), 0)
+    builder.PrependUOffsetTRelativeSlot(16, flatbuffers.number_types.UOffsetTFlags.py_type(samplesPerChannel), 0)
 
 def AddSamplesPerChannel(builder, samplesPerChannel):
     SensorDataAddSamplesPerChannel(builder, samplesPerChannel)

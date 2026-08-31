@@ -7,37 +7,39 @@ from flatbuffers.compat import import_numpy
 np = import_numpy()
 
 # 单个采样点，内存紧凑的 struct
+# abs_time_stamp_in_sec 为 LSL 风格绝对时间戳（Unix 秒，起流墙钟 +
+# sample_index/采样率，解码时计算；锚点未知为 0），不再有 ms 存储字段
 class Sample(object):
     __slots__ = ['_tab']
 
     @classmethod
     def SizeOf(cls):
-        return 32
+        return 40
 
     # Sample
     def Init(self, buf, pos):
         self._tab = flatbuffers.table.Table(buf, pos)
 
     # Sample
-    def TimeStampInMs(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(0))
+    def AbsTimeStampInSec(self): return self._tab.Get(flatbuffers.number_types.Float64Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(0))
     # Sample
-    def ChannelIndex(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(4))
+    def ChannelIndex(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(8))
     # Sample
-    def SampleIndex(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(8))
+    def SampleIndex(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(12))
     # Sample
-    def RawData(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(12))
+    def RawData(self): return self._tab.Get(flatbuffers.number_types.Int32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(16))
     # Sample
-    def Data(self): return self._tab.Get(flatbuffers.number_types.Float32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(16))
+    def Data(self): return self._tab.Get(flatbuffers.number_types.Float32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(20))
     # Sample
-    def Impedance(self): return self._tab.Get(flatbuffers.number_types.Float32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(20))
+    def Impedance(self): return self._tab.Get(flatbuffers.number_types.Float32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(24))
     # Sample
-    def Saturation(self): return self._tab.Get(flatbuffers.number_types.Float32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(24))
+    def Saturation(self): return self._tab.Get(flatbuffers.number_types.Float32Flags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(28))
     # Sample
-    def IsLost(self): return self._tab.Get(flatbuffers.number_types.BoolFlags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(28))
+    def IsLost(self): return self._tab.Get(flatbuffers.number_types.BoolFlags, self._tab.Pos + flatbuffers.number_types.UOffsetTFlags.py_type(32))
 
-def CreateSample(builder, timeStampInMs, channelIndex, sampleIndex, rawData, data, impedance, saturation, isLost):
-    builder.Prep(4, 32)
-    builder.Pad(3)
+def CreateSample(builder, absTimeStampInSec, channelIndex, sampleIndex, rawData, data, impedance, saturation, isLost):
+    builder.Prep(8, 40)
+    builder.Pad(7)
     builder.PrependBool(isLost)
     builder.PrependFloat32(saturation)
     builder.PrependFloat32(impedance)
@@ -45,5 +47,5 @@ def CreateSample(builder, timeStampInMs, channelIndex, sampleIndex, rawData, dat
     builder.PrependInt32(rawData)
     builder.PrependInt32(sampleIndex)
     builder.PrependInt32(channelIndex)
-    builder.PrependInt32(timeStampInMs)
+    builder.PrependFloat64(absTimeStampInSec)
     return builder.Offset()

@@ -47,9 +47,12 @@ class BleakHost:
     def start(self):
         if self._started:
             return
-        # 启动时才创建子进程，并传入当前日志路径，保证子进程尽早写文件日志
+        # 启动时才创建子进程，并传入当前日志目录/文件输出开关/debug 开关
+        # 以及主进程已打开的 controller log 具体路径，保证两个进程写同一文件
         self._bleak_process = BleakProcess(
-            self._cmd_queue, self._result_queue, self._data_queue, SdkLog.get_log_path()
+            self._cmd_queue, self._result_queue, self._data_queue,
+            SdkLog.get_log_dir(), SdkLog.is_file_output_enabled(),
+            SdkLog.is_debug_enabled(), SdkLog.get_controller_log_path(),
         )
         self._bleak_process.start()
         self._started = True
@@ -198,9 +201,14 @@ class BleakHost:
                     SdkLog.exception(_TAG, "Unexpected error")
         elif msg_type == "command_result":
             self._handle_command_result(msg)
-        elif msg_type in ("state_changed", "power_changed", "sensor_data", "error"):
-            if self.on_device_message is not None:
-                device_mac = msg.get("device_mac")
+        elif msg_type in ("state_changed", "power_changed", "sensor_data", "error", "device_info_update"):
+            device_mac = msg.get("device_mac")
+            if msg_type == "error" and device_mac is None:
+                # 无设备归属的进程级错误（多为扫描错误）：写入 controller log，
+                # 不走 on_device_message（其 device_mac 形参不允许 None，
+                # Cython 编译版会直接 TypeError）
+                SdkLog.controller(_TAG, f"error: {msg.get('message', '')}")
+            elif self.on_device_message is not None:
                 try:
                     self.on_device_message(device_mac, msg)
                 except Exception as e:

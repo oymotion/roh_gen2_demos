@@ -126,6 +126,28 @@ def start_loop(loop: asyncio.BaseEventLoop):
     loop.run_forever()
 
 
+def checkSetupDongle() -> str:
+    """检查 USB BLE dongle 是否已装好驱动/权限、可供 bumble 后端使用。
+
+    已可用时直接返回 "OK"；不可用时按平台提权运行随包安装脚本
+    （sensor/tools/，随 wheel 打包）后重新检测：Windows 弹 UAC 窗口运行
+    setup_dongle_winusb.ps1 绑定 WinUSB 驱动；Linux 经 sudo 运行
+    setup_dongle_udev.sh 安装 udev 规则——有控制终端时在终端输密码，
+    无终端（GUI 直启）时自动弹终端模拟器窗口运行脚本（找不到终端退到
+    pkexec 图形提权框），规则生效可能还需重新插拔一次 dongle；
+    macOS 免驱，仅做检测不执行脚本。
+    Windows 另经 check_dongle_status.ps1 做 PnP 数量核对：被禁用/错误状态的
+    dongle libusb 枚举不到，PnP 发现数量不符时先提权恢复（启用/重启设备）；
+    恢复不成功的设备以 "OK: N\\n<文字提示>" 形式附在返回值中。
+    调用在当前进程内执行并阻塞等待用户完成提权确认。
+    返回 "OK: N"（N 为检测到的可用 dongle 数量）表示至少一只 dongle
+    已就绪可用；失败时返回 "Error: ..."（含系统出错信息）。
+    """
+    from sensor import bumble_dongle
+
+    return bumble_dongle.check_setup_dongle()
+
+
 def calc_crc8(data):
     crc8Table = [
         0x00,

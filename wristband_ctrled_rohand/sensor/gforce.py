@@ -24,7 +24,7 @@ from bleak import (
 )
 
 from sensor import sensor_utils
-from sensor.bin_recorder import BIN_RECORD_DATA, BinRecordWriter, format_mac, read_bin_record_at
+from sensor.bin_recorder import BIN_RECORD_CMD_RECV, BIN_RECORD_CMD_SEND, BIN_RECORD_DATA, BIN_RECORD_EVENT, BinRecordWriter, format_mac, read_bin_record_at
 from sensor.sensor_device import BLEChipType
 
 from sensor.sdk_log import SdkLog
@@ -234,6 +234,23 @@ class SamplingRate(IntEnum):
     HZ_400 = (400,)
     HZ_500 = (500,)
     HZ_650 = (650,)
+    HZ_1000 = (1000,)
+    HZ_2000 = (2000,)
+
+
+# EEG/ECG cap 响应 fs 字节的可选采样率位掩码：bit0=250Hz，bit1=500Hz，
+# bit2=1000Hz，bit3=2000Hz（OB6000 固件约定，Cerelax-Ultra 实测上报 0x0F；
+# EEG 与 ECG 采样率绑定，共用同一张表）
+CAP_FS_BITMASK_RATES = (250, 500, 1000, 2000)
+
+
+def decode_cap_fs_bitmask(fs_mask: int):
+    """把 EEG/ECG cap 响应的 fs 位掩码解码为支持的采样率列表（Hz，升序）。"""
+    try:
+        mask = int(fs_mask)
+    except (TypeError, ValueError):
+        return []
+    return [rate for bit, rate in enumerate(CAP_FS_BITMASK_RATES) if mask & (1 << bit)]
 
 
 @dataclass
@@ -242,6 +259,30 @@ class EmgRawDataConfig:
     channel_mask: int = 0xFF
     batch_len: int = 16
     resolution: SampleResolution = SampleResolution.BITS_8
+
+    def to_bytes(self) -> bytes:
+        body = b""
+        body += struct.pack("<H", self.fs)
+        body += struct.pack("<H", self.channel_mask)
+        body += struct.pack("<B", self.batch_len)
+        body += struct.pack("<B", self.resolution)
+        return body
+
+    @classmethod
+    def from_bytes(cls, data: bytes):
+        fs, channel_mask, batch_len, resolution = struct.unpack(
+            "<HHBB",
+            data,
+        )
+        return cls(fs, channel_mask, batch_len, resolution)
+
+
+@dataclass
+class EmgRawDataCap:
+    fs: SamplingRate = 0
+    channel_mask: int = 0
+    batch_len: int = 0
+    resolution: SampleResolution = 0
 
     def to_bytes(self) -> bytes:
         body = b""
@@ -334,6 +375,30 @@ class EcgRawDataConfig:
             data,
         )
         return cls(fs, channel_mask, batch_len, resolution, K)
+
+
+@dataclass
+class EcgRawDataCap:
+    fs: SamplingRate = 0
+    channel_count: int = 0
+    batch_len: int = 0
+    resolution: SampleResolution = 0
+
+    def to_bytes(self) -> bytes:
+        body = b""
+        body += struct.pack("<B", self.fs)
+        body += struct.pack("<B", self.channel_count)
+        body += struct.pack("<B", self.batch_len)
+        body += struct.pack("<B", self.resolution)
+        return body
+
+    @classmethod
+    def from_bytes(cls, data: bytes):
+        fs, channel_count, batch_len, resolution = struct.unpack(
+            "<BBBB",
+            data,
+        )
+        return cls(fs, channel_count, batch_len, resolution)
 
 
 @dataclass
@@ -461,7 +526,11 @@ class GForce:
         gforce_event_loop: asyncio.AbstractEventLoop,
         chip_type: BLEChipType = BLEChipType.Unknown,
         client_kwargs: dict = None,
+        device_mac: Optional[str] = None,
     ):
+        # 绑定 profile 日志（优先用调用方给的统一注册 MAC；缺省回退 bleak
+        # device.address——macOS 原生后端下是 UUID，仅作兜底）
+        self._log = SdkLog.bind(device_mac or device.address)
         self.device_name = ""
         self.client = None
         self.event_loop = event_loop
@@ -469,6 +538,10 @@ class GForce:
         self.cmd_char = cmd_char
         self.data_char = data_char
         self.responses: Dict[Command, queue.Queue] = {}
+        # 每命令一把 asyncio 串行锁（仅在 gforce 事件循环内使用，不阻塞任何线程）：
+        # 协议无事务 ID，同 cmd 并发请求无法区分响应归属，并发时响应队列竞态
+        # 会使等待者连锁饿死；用 threading.Lock 则会在单线程事件循环内死锁
+        self._cmd_locks: Dict[Command, asyncio.Lock] = {}
         self.last_command_failure_time: Optional[float] = None
         self.last_command_failure_cmd: Optional[int] = None
         self.resolution = SampleResolution.BITS_8
@@ -482,8 +555,25 @@ class GForce:
         self.packet_id = 0
         self.data_packet = []
 
+        # 起流时刻（32 位毫秒）与首包 delay 上报：
+        # on_stream_start_ts(ts_ms, wall_ms) 在起流写完成后触发，取 bin 起流记录
+        # （OYM stream_start 事件 / RFSTAR cmd_send）的时间戳，与回放还原值一致；
+        # ts_ms 为低 32 位（delay 计算用），wall_ms 为完整墙钟毫秒（LSL 锚点用）；
+        # on_first_packet_delay(delay_ms) 在起流后首个原始数据包到达时触发
+        self.on_stream_start_ts = None
+        self.on_first_packet_delay = None
+        self._stream_start_ts_ms = 0
+        self._stream_start_wall_ms = 0
+        self._await_first_packet = False
+
         # 原始数据 bin 记录器：连接成功后打开，保存目录与日志目录一致
         self._bin_writer: Optional[BinRecordWriter] = None
+        # 已知的 bin 导出路径（DEBUG_BLE_DATA_PATH，connect 命令捎来或
+        # setParam 时由 switch_bin_export 更新）：非空时 _open_bin_recorder
+        # 直接在导出文件上追加记录，不再先写 temp 再拷贝
+        self._bin_export_path_hint: Optional[str] = None
+        # 当前 writer 是否为直写导出文件（finalize 时只关闭，不拷贝不删除）
+        self._bin_writer_direct = False
         # 队列满等待超时后仍未入队的记录偏移，由恢复线程从 bin 文件读回补入队列
         self._bin_dropped_offsets: "queue.Queue[int]" = queue.Queue(maxsize=_BIN_RECOVERY_OFFSET_MAX)
         # bin 文件写入不可用（打开失败/磁盘错误）时的降级缓存：
@@ -500,23 +590,44 @@ class GForce:
     # 原始数据 bin 记录
     # ------------------------------------------------------------------
     def _open_bin_recorder(self):
-        """在系统 temp 目录打开 bin 记录文件，失败不影响正常数据流。
+        """打开 bin 记录文件，失败不影响正常数据流。
 
-        无论 bin 记录是否开启成功，都会启动恢复线程：bin 不可用时的
-        500 条内存降级缓存同样依赖它补回数据包。
+        已知导出路径（_bin_export_path_hint，来自 connect 命令或此前的
+        DEBUG_BLE_DATA_PATH setParam）时直接在导出文件上追加记录；否则写在
+        系统 temp 目录，finalize 时再拷贝导出。无论 bin 记录是否开启成功，
+        都会启动恢复线程：bin 不可用时的 500 条内存降级缓存同样依赖它补回
+        数据包。
         """
         self.finalize_bin_recorder()
         self._start_bin_recovery()
+        hint = self._bin_export_path_hint
+        if hint:
+            try:
+                directory = os.path.dirname(hint) or "."
+                try:
+                    free_bytes = shutil.disk_usage(directory).free
+                    if free_bytes < _BIN_MIN_FREE_BYTES:
+                        raise OSError(f"磁盘剩余空间不足 ({free_bytes // 1024 // 1024}MB)")
+                except OSError:
+                    raise
+                except Exception:
+                    pass  # 检查磁盘空间失败时仍尝试打开
+                self._bin_writer = BinRecordWriter(hint, append=True)
+                self._bin_writer_direct = True
+                self._log.i(_TAG, f"Bin recorder opened directly at export path: {hint}")
+                return
+            except Exception as e:
+                self._log.w(_TAG, f"直写导出路径失败，回退 temp bin: {hint}: {e}")
         try:
             log_dir = tempfile.gettempdir()
             # 磁盘剩余空间不足时不开启 bin 记录
             try:
                 free_bytes = shutil.disk_usage(log_dir).free
                 if free_bytes < _BIN_MIN_FREE_BYTES:
-                    SdkLog.w(_TAG, f"磁盘剩余空间不足 ({free_bytes // 1024 // 1024}MB)，跳过 bin 记录")
+                    self._log.w(_TAG, f"磁盘剩余空间不足 ({free_bytes // 1024 // 1024}MB)，跳过 bin 记录")
                     return
             except Exception as e:
-                SdkLog.w(_TAG, f"检查磁盘空间失败，仍尝试开启 bin 记录: {e}")
+                self._log.w(_TAG, f"检查磁盘空间失败，仍尝试开启 bin 记录: {e}")
             name = self.device_name or getattr(self._device, "name", "") or "unknown"
             safe_name = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)
             # Windows 文件名不允许 ':'，MAC 用 '-' 分隔
@@ -524,10 +635,12 @@ class GForce:
             safe_mac = "".join(c if (c.isalnum() or c in "-") else "_" for c in mac)
             path = os.path.join(log_dir, f"{safe_name}_{safe_mac}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.bin")
             self._bin_writer = BinRecordWriter(path)
-            SdkLog.i(_TAG, f"Bin recorder opened: {path}")
+            self._bin_writer_direct = False
+            self._log.i(_TAG, f"Bin recorder opened: {path}")
         except Exception as e:
-            SdkLog.exception(_TAG, f"Failed to open bin recorder: {e}")
+            self._log.exception(_TAG, f"Failed to open bin recorder: {e}")
             self._bin_writer = None
+            self._bin_writer_direct = False
 
     def close_bin_recorder(self):
         """停止 bin 恢复线程，关闭 bin 记录文件并 flush。"""
@@ -551,26 +664,92 @@ class GForce:
         """结束本次 bin 记录：flush 关闭后按需导出并删除 temp 原文件（幂等）。
 
         bin 默认写在系统 temp 目录；export_path 非空（DEBUG_BLE_DATA_PATH
-        设置的导出位置）时先把 bin 拷贝过去，再删除 temp 原文件。
+        设置的导出位置）时先把 bin 拷贝过去（文件已存在则追加，续上上次
+        会话的 bin——bin 记录格式可顺序拼接，且每段起流时都会重写配置记录，
+        各段自描述），再删除 temp 原文件。writer 为直写导出文件
+        （_bin_writer_direct，路径提前已知时 _open_bin_recorder 直接打开
+        导出文件）时只关闭，不拷贝不删除。
         """
         writer = self._bin_writer
         path = writer.path if writer is not None else None
+        direct = self._bin_writer_direct
+        self._log.d(_TAG, f"finalize bin recorder: temp={path}, export={export_path or 'disabled'}"
+                          f"{', direct' if direct else ''}")
         self.close_bin_recorder()
+        self._bin_writer_direct = False
         if not path:
+            return
+        if direct:
+            # 数据已直接写在导出文件内，无需拷贝，也不能删除
             return
         if export_path:
             try:
                 directory = os.path.dirname(export_path)
                 if directory:
                     os.makedirs(directory, exist_ok=True)
-                shutil.copyfile(path, export_path)
-                SdkLog.i(_TAG, f"Bin exported to: {export_path}")
+                if os.path.exists(export_path) and os.path.getsize(export_path) > 0:
+                    # 目标文件已存在：追加，续上上次会话的 bin
+                    with open(path, "rb") as src, open(export_path, "ab") as dst:
+                        shutil.copyfileobj(src, dst)
+                    self._log.i(_TAG, f"Bin appended to: {export_path}")
+                else:
+                    shutil.copyfile(path, export_path)
+                    self._log.i(_TAG, f"Bin exported to: {export_path}")
             except Exception as e:
-                SdkLog.w(_TAG, f"Bin export failed: {export_path}: {e}")
+                self._log.w(_TAG, f"Bin export failed: {export_path}: {e}")
         try:
             os.remove(path)
         except Exception:
             pass
+
+    def switch_bin_export(self, export_path: Optional[str] = None):
+        """更新 bin 导出路径（DEBUG_BLE_DATA_PATH setParam 时调用）。
+
+        export_path 非空：之后直接在导出文件上追加记录——当前还有 temp
+        writer 开着时，先把 temp 段内容并入导出文件再切换，避免整段
+        「tmp 写入后移动」；为 None：恢复 temp 记录（直写段已落导出文件，
+        直接保留）。当前没有打开的 writer 时只记路径，下次
+        _open_bin_recorder 生效。
+        """
+        export_path = export_path or None
+        self._bin_export_path_hint = export_path
+        writer = self._bin_writer
+        if writer is None:
+            return
+        current = writer.path
+        was_direct = self._bin_writer_direct
+        if export_path is None and not was_direct:
+            return  # temp 记录中且导出关闭：无需切换
+        if export_path is not None and was_direct \
+                and os.path.abspath(export_path) == os.path.abspath(current):
+            return  # 已直写同一文件
+        # 关闭当前段（回填头部记录、停恢复线程）
+        self.close_bin_recorder()
+        self._bin_writer_direct = False
+        if not was_direct:
+            if export_path is not None:
+                # temp 段并入导出文件（通常为连接阶段的一小段）
+                try:
+                    directory = os.path.dirname(export_path)
+                    if directory:
+                        os.makedirs(directory, exist_ok=True)
+                    with open(current, "rb") as src, open(export_path, "ab") as dst:
+                        shutil.copyfileobj(src, dst)
+                    self._log.i(_TAG, f"Bin appended to: {export_path}")
+                except Exception as e:
+                    self._log.w(_TAG, f"Bin export failed: {export_path}: {e}")
+            try:
+                os.remove(current)
+            except Exception:
+                pass
+        # 恢复队列中待补的偏移指向旧文件/旧位置，已失效，丢弃
+        while not self._bin_dropped_offsets.empty():
+            try:
+                self._bin_dropped_offsets.get_nowait()
+            except Exception:
+                break
+        # 开启新一段：hint 非空直写导出文件，否则回 temp
+        self._open_bin_recorder()
 
     def write_bin_config(self, config: dict):
         """把解析配置写入 bin 文件（init 成功后调用），供离线回放恢复上下文。"""
@@ -578,11 +757,33 @@ class GForce:
         if writer is not None:
             writer.write_config(config)
 
-    def _write_bin_data(self, data: bytes) -> Optional[int]:
+    def _write_bin_data(self, data: bytes, ts_ms: Optional[int] = None,
+                        perf_ns: Optional[int] = None) -> Optional[int]:
         writer = self._bin_writer
         if writer is not None:
-            return writer.write_data(data)
+            return writer.write_record(BIN_RECORD_DATA, data, ts_ms=ts_ms, perf_ns=perf_ns)
         return None
+
+    def _write_bin_record(self, record_type: int, payload: bytes,
+                          perf_ns: Optional[int] = None,
+                          ts_ms: Optional[int] = None) -> int:
+        """写一条指定类型的 bin 记录（命令收发等），返回记录使用的时间戳（ms）。
+
+        ``perf_ns``（bumble 层 perf_counter_ns 打点）不为 None 时同步写入
+        一条紧邻前置的 0x07 高精度时间戳记录。``ts_ms`` 不为 None 时作为
+        记录时间戳（bumble 层发送时刻的 wall ms），否则现场打点。
+        """
+        if ts_ms is None:
+            ts_ms = int(time.time() * 1000)
+        writer = self._bin_writer
+        if writer is not None:
+            writer.write_record(record_type, payload, ts_ms=ts_ms, perf_ns=perf_ns)
+        return ts_ms
+
+    def log_bin_event(self, name: str, perf_ns: Optional[int] = None,
+                      ts_ms: Optional[int] = None) -> int:
+        """把蓝牙事件（connect/disconnect/stream_start/stream_stop 等）写入 bin，返回记录时间戳（ms）。"""
+        return self._write_bin_record(BIN_RECORD_EVENT, name.encode("utf-8"), perf_ns, ts_ms)
 
     # ------------------------------------------------------------------
     # bin 恢复：队列满时未入队的数据包，之后从 bin 文件读回补入队列
@@ -604,7 +805,7 @@ class GForce:
         try:
             self._bin_dropped_offsets.put_nowait(offset)
         except queue.Full:
-            SdkLog.w(_TAG, "Bin recovery offset queue full, skip recovery for one packet")
+            self._log.w(_TAG, "Bin recovery offset queue full, skip recovery for one packet")
 
     def _queue_mem_recovery(self, data: bytes):
         """bin 不可用时的降级缓存：最多 500 条，满时丢弃最旧的一条。"""
@@ -622,14 +823,14 @@ class GForce:
             now = time.time()
             if now - self._mem_drop_last_log >= 2.0:
                 self._mem_drop_last_log = now
-                SdkLog.w(_TAG, "Memory fallback cache full, dropping oldest packet")
+                self._log.w(_TAG, "Memory fallback cache full, dropping oldest packet")
 
     def _recover_payload(self, q: queue.Queue, payload: bytes):
         """把补回的数据包等待放入原始队列；停止时放弃。"""
         while not self._bin_recovery_stop.is_set():
             try:
                 q.put(payload, timeout=0.5)
-                SdkLog.i(_TAG, "Recovered one packet into raw queue")
+                self._log.i(_TAG, "Recovered one packet into raw queue")
                 return
             except queue.Full:
                 continue
@@ -668,10 +869,10 @@ class GForce:
                     writer.flush()
                     record = read_bin_record_at(reader, offset)
                 except Exception:
-                    SdkLog.exception(_TAG, "Bin recovery read failed")
+                    self._log.exception(_TAG, "Bin recovery read failed")
                     continue
                 if record is None or record[0] != BIN_RECORD_DATA:
-                    SdkLog.w(_TAG, f"Bin recovery got invalid record at offset {offset}")
+                    self._log.w(_TAG, f"Bin recovery got invalid record at offset {offset}")
                     continue
                 self._recover_payload(q, record[2])
         finally:
@@ -699,18 +900,33 @@ class GForce:
 
         client = BleakClient(self._device, disconnected_callback=disconnect_cb, **self._client_kwargs)
         self.client = client
+        # bumble 后端按芯片类型指定期望 ATT MTU（_patch_bumble_client_connect
+        # 在 connect 内据此交换）：RFSTAR(BLE 5.3)尝试 511，其余 247；
+        # 原生 bleak 后端的 _backend 无补丁读取该属性，无副作用
+        try:
+            desired_mtu = 511 if self._chip_type == BLEChipType.RFSTAR else 247
+            setattr(getattr(client, "_backend", client), "_sdk_att_mtu", desired_mtu)
+        except Exception:
+            pass
         self.device_name = self._device.name
         self._raw_data_buf = buf
         
         max_retries = 3
         for attempt in range(max_retries):
             try:
+                self._log.d(_TAG, f"bleak connect attempt {attempt + 1}/{max_retries}: {self._device.name}")
+                connect_t0 = time.monotonic()
                 await asyncio.wait_for(client.connect(), timeout=sensor_utils._TIMEOUT)
+                self._log.d(_TAG, f"bleak connect attempt {attempt + 1}/{max_retries} returned "
+                                  f"in {(time.monotonic() - connect_t0) * 1000:.0f}ms, "
+                                  f"is_connected={client.is_connected}: {self._device.name}")
                 await asyncio.sleep(0.5)
-                
+
                 if client.is_connected:
                     break
             except Exception as e:
+                self._log.w(_TAG, f"bleak connect attempt {attempt + 1}/{max_retries} failed: "
+                                  f"{type(e).__name__}: {e}: {self._device.name}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1.0)
                 else:
@@ -730,27 +946,76 @@ class GForce:
                     client.start_notify(self.data_char, self._on_universal_response),
                     timeout=sensor_utils._TIMEOUT
                 )
+            self._log.d(_TAG, f"notify enabled ({'universal data' if self._is_universal_stream else 'cmd'}), "
+                              f"connect sequence done: {self._device.name}")
         except Exception as e:
+            self._log.w(_TAG, f"start_notify failed, disconnecting: "
+                              f"{type(e).__name__}: {e}: {self._device.name}")
             await client.disconnect()
             raise ConnectionError("Connect %s fail: %s" % (self._device.name , e))
 
         # 连接成功后打开 bin 记录文件，完整保存收到的原始数据
         self._open_bin_recorder()
+        self.log_bin_event("connect")
+
+    def _backend_perf_ns(self, attr: str) -> int:
+        """读取 bumble 后端实例上的高精度打点（_last_write_perf_ns /
+        _last_notify_perf_ns，bumble 层 perf_counter_ns）；原生 bleak 后端
+        或补丁未生效时退化为现场打点。"""
+        client = self.client
+        backend = getattr(client, "_backend", client) if client is not None else None
+        ns = getattr(backend, attr, None) if backend is not None else None
+        return ns if ns is not None else time.perf_counter_ns()
+
+    def _backend_write_wall_ms(self) -> int:
+        """读取 bumble 后端实例上的发送时刻 wall ms 打点（_last_write_wall_ms，
+        与 _last_write_perf_ns 同一时点）；原生 bleak 后端或补丁未生效时
+        退化为现场打点。"""
+        client = self.client
+        backend = getattr(client, "_backend", client) if client is not None else None
+        ms = getattr(backend, "_last_write_wall_ms", None) if backend is not None else None
+        return ms if ms is not None else int(time.time() * 1000)
+
+    def _note_stream_start_ts(self, ts_ms: int):
+        """记录起流时刻（与 bin 起流记录同一时间戳）并上报；同时武装首包 delay 测量。
+        ts_ms 为完整墙钟毫秒；32 位截断只用于 delay 的毫秒值。"""
+        self._stream_start_ts_ms = ts_ms & 0xFFFFFFFF
+        self._stream_start_wall_ms = ts_ms
+        self._await_first_packet = True
+        if self.on_stream_start_ts is not None:
+            self.on_stream_start_ts(ts_ms & 0xFFFFFFFF, ts_ms)
+
+    def _note_raw_packet_arrival(self, now_ms: Optional[int] = None):
+        """原始数据包到达回调的公共入口：起流后首包计算 delay 并上报。"""
+        if not self._await_first_packet:
+            return
+        self._await_first_packet = False
+        if now_ms is None:
+            now_ms = int(time.time() * 1000) & 0xFFFFFFFF
+        delay = (now_ms - self._stream_start_ts_ms) & 0xFFFFFFFF
+        self._log.d(_TAG, f"first packet delay: {delay}ms (start ts {self._stream_start_ts_ms})")
+        if self.on_first_packet_delay is not None:
+            self.on_first_packet_delay(delay)
 
     def _on_data_response(self, q: queue.Queue[bytes], bs):
+        # 首包 delay 与 bin 数据记录取同一时间戳，保证回放还原值与 live 一致；
+        # perf_ns 取 bumble 层通知分发入口打点（原生后端退化为现场打点）
+        ts_ms = int(time.time() * 1000)
+        perf_ns = self._backend_perf_ns("_last_notify_perf_ns")
+        self._note_raw_packet_arrival(ts_ms & 0xFFFFFFFF)
         # 先写 bin 文件再放入队列；队列满时等待入队，等待超时仍未入队的
         # 交给恢复线程：bin 可用时按偏移从 bin 读回补入，bin 不可用时
         # 退化为 500 条内存缓存（超出丢弃最旧包）
         data = bytes(bs)
-        offset = self._write_bin_data(data)
+        offset = self._write_bin_data(data, ts_ms, perf_ns)
         try:
             q.put(data, timeout=_QUEUE_FULL_WAIT_TIMEOUT)
         except queue.Full:
             if offset is not None:
-                SdkLog.w(_TAG, "Raw data queue full after wait, scheduling bin recovery")
+                self._log.w(_TAG, "Raw data queue full after wait, scheduling bin recovery")
                 self._queue_bin_recovery(offset)
             else:
-                SdkLog.w(_TAG, "Raw data queue full after wait, using in-memory fallback cache")
+                self._log.w(_TAG, "Raw data queue full after wait, using in-memory fallback cache")
                 self._queue_mem_recovery(data)
 
     @staticmethod
@@ -813,23 +1078,32 @@ class GForce:
         return emg_gesture_data.reshape(-1, num_channels)
 
     def _on_universal_response(self, _: BleakGATTCharacteristic, bs):
+        # 首包 delay 与 bin 数据记录取同一时间戳，保证回放还原值与 live 一致；
+        # perf_ns 取 bumble 层通知分发入口打点（原生后端退化为现场打点）
+        ts_ms = int(time.time() * 1000)
+        perf_ns = self._backend_perf_ns("_last_notify_perf_ns")
+        self._note_raw_packet_arrival(ts_ms & 0xFFFFFFFF)
         # 先写 bin 文件再放入队列；队列满时等待入队，等待超时仍未入队的
         # 交给恢复线程：bin 可用时按偏移从 bin 读回补入，bin 不可用时
         # 退化为 500 条内存缓存（超出丢弃最旧包）
         data = bytes(bs)
-        offset = self._write_bin_data(data)
+        offset = self._write_bin_data(data, ts_ms, perf_ns)
         q = self._raw_data_buf
         try:
             q.put(data, timeout=_QUEUE_FULL_WAIT_TIMEOUT)
         except queue.Full:
             if offset is not None:
-                SdkLog.w(_TAG, "Universal raw data queue full after wait, scheduling bin recovery")
+                self._log.w(_TAG, "Universal raw data queue full after wait, scheduling bin recovery")
                 self._queue_bin_recovery(offset)
             else:
-                SdkLog.w(_TAG, "Universal raw data queue full after wait, using in-memory fallback cache")
+                self._log.w(_TAG, "Universal raw data queue full after wait, using in-memory fallback cache")
                 self._queue_mem_recovery(data)
 
     def _on_cmd_response(self, _: BleakGATTCharacteristic, bs):
+        # 命令响应先写 bin（CMD 特征上报），再交给响应解析；
+        # perf_ns 取 bumble 层通知分发入口打点
+        self._write_bin_record(BIN_RECORD_CMD_RECV, bytes(bs),
+                               self._backend_perf_ns("_last_notify_perf_ns"))
         sensor_utils.async_exec(self.async_on_cmd_response(bs), self.event_loop)
 
     async def async_on_cmd_response(self, bs):
@@ -1121,6 +1395,15 @@ class GForce:
         )
         return EmgRawDataConfig.from_bytes(buf)
 
+    async def get_emg_raw_data_cap(self) -> EmgRawDataCap:
+        buf = await self._send_request(
+            Request(
+                cmd=Command.GET_EMG_RAWDATA_CAP,
+                has_res=True,
+            )
+        )
+        return EmgRawDataCap.from_bytes(buf)
+
     async def get_eeg_raw_data_config(self) -> EegRawDataConfig:
         buf = await self._send_request(
             Request(
@@ -1139,6 +1422,17 @@ class GForce:
         )
         return EegRawDataCap.from_bytes(buf)
 
+    async def set_eeg_raw_data_config(self, cfg: EegRawDataConfig):
+        body = cfg.to_bytes()
+        ret = await self._send_request(
+            Request(
+                cmd=Command.CMD_SET_EEG_CONFIG,
+                body=body,
+                has_res=True,
+            )
+        )
+        return self._check_set_response(ret, "set_eeg_raw_data_config")
+
     async def get_ecg_raw_data_config(self) -> EcgRawDataConfig:
         buf = await self._send_request(
             Request(
@@ -1147,6 +1441,26 @@ class GForce:
             )
         )
         return EcgRawDataConfig.from_bytes(buf)
+
+    async def get_ecg_raw_data_cap(self) -> EcgRawDataCap:
+        buf = await self._send_request(
+            Request(
+                cmd=Command.CMD_GET_ECG_CAP,
+                has_res=True,
+            )
+        )
+        return EcgRawDataCap.from_bytes(buf)
+
+    async def set_ecg_raw_data_config(self, cfg: EcgRawDataConfig):
+        body = cfg.to_bytes()
+        ret = await self._send_request(
+            Request(
+                cmd=Command.CMD_SET_ECG_CONFIG,
+                body=body,
+                has_res=True,
+            )
+        )
+        return self._check_set_response(ret, "set_ecg_raw_data_config")
 
     async def get_ppg_raw_data_config(self) -> PpgRawDataConfig:
         buf = await self._send_request(
@@ -1223,7 +1537,7 @@ class GForce:
         )
         return BrthRawDataConfig.from_bytes(buf)
 
-    async def set_subscription(self, subscription: DataSubscription):
+    async def set_subscription(self, subscription: DataSubscription, sync_gate=None, mark_stream_start=False):
         body = [
             0xFF & subscription,
             0xFF & (subscription >> 8),
@@ -1236,11 +1550,13 @@ class GForce:
                 cmd=Command.SET_DATA_NOTIF_SWITCH,
                 body=body,
                 has_res=True,
-            )
+            ),
+            sync_gate=sync_gate,
+            mark_stream_start=mark_stream_start,
         )
         return self._check_set_response(ret, "set_subscription")
 
-    def _check_set_response(self, ret: Optional[bytes], name: str) -> bytes:
+    def _check_set_response(self, ret: Optional[bytes], name: str) -> Optional[bytes]:
         # """检查 set_xxxx 命令的响应，失败时抛出 RuntimeError。"""
         # if ret is None:
         #     raise RuntimeError(f"{name} failed: no response")
@@ -1250,13 +1566,18 @@ class GForce:
         #     raise RuntimeError(f"{name} failed: error code {ret[0]}")
         return ret
 
-    async def start_streaming(self, q: queue.Queue):
-        return await self._run_in_gforce_loop(self._do_start_streaming(q))
+    async def start_streaming(self, q: queue.Queue, sync_gate=None):
+        return await self._run_in_gforce_loop(self._do_start_streaming(q, sync_gate))
 
-    async def _do_start_streaming(self, q: queue.Queue):
+    async def _do_start_streaming(self, q: queue.Queue, sync_gate=None):
         # stop 后 bin 已 finalize 删除；重新起流时在 temp 开启新一轮捕获
         if self._bin_writer is None:
             self._open_bin_recorder()
+        if sync_gate is not None:
+            # 多设备同步起流：CCCD 起流写在 bumble 后端等待统一放行
+            from sensor.bumble_dongle import arm_sync_write_gate
+
+            arm_sync_write_gate(self.client, sync_gate, ("start_notify",))
         await asyncio.wait_for(
             self.client.start_notify(
                 self.data_char,
@@ -1264,15 +1585,29 @@ class GForce:
             ),
             timeout=sensor_utils._TIMEOUT
         )
+        # 起流时刻与 bin 的 stream_start 事件记录取同一时间戳，
+        # 保证回放还原的 startTimeStamp 与 live 一致；
+        # perf_ns / ts_ms 取 bumble 层 CCCD 写下发前打点（门闩放行后）
+        ts_ms = self.log_bin_event("stream_start", self._backend_perf_ns("_last_write_perf_ns"),
+                                   self._backend_write_wall_ms())
+        self._note_stream_start_ts(ts_ms)
 
-    async def stop_streaming(self):
-        return await self._run_in_gforce_loop(self._do_stop_streaming())
+    async def stop_streaming(self, sync_gate=None):
+        return await self._run_in_gforce_loop(self._do_stop_streaming(sync_gate))
 
-    async def _do_stop_streaming(self):
+    async def _do_stop_streaming(self, sync_gate=None):
+        if sync_gate is not None:
+            # 多设备同步停流：CCCD 停流写在 bumble 后端等待统一放行
+            from sensor.bumble_dongle import arm_sync_write_gate
+
+            arm_sync_write_gate(self.client, sync_gate, ("stop_notify",))
         try:
             await asyncio.wait_for(self.client.stop_notify(self.data_char), timeout=sensor_utils._TIMEOUT)
         except Exception as e:
             raise RuntimeError("Stop streaming %s fail: %s" % (self._device.name , e))
+        # perf_ns / ts_ms 取 bumble 层 CCCD 停流写下发前打点（门闩放行后）
+        self.log_bin_event("stream_stop", self._backend_perf_ns("_last_write_perf_ns"),
+                           self._backend_write_wall_ms())
 
     async def disconnect(self):
         return await self._run_in_gforce_loop(self._do_disconnect())
@@ -1285,6 +1620,7 @@ class GForce:
                     await asyncio.wait_for(self.client.disconnect(), timeout=sensor_utils._TIMEOUT)
             except Exception as e:
                 raise RuntimeError("Disconnect %s fail: %s" % (self._device.name , e))
+        self.log_bin_event("disconnect")
 
     def _get_response_channel(self, cmd: Command) -> queue.Queue:
         if self.responses.get(cmd) != None:
@@ -1294,10 +1630,21 @@ class GForce:
             self.responses[cmd] = q
             return q
 
-    async def _send_request(self, req: Request) -> Optional[bytes]:
-        return await self._send_request_internal(req=req)
+    async def _send_request(self, req: Request, sync_gate=None, mark_stream_start=False) -> Optional[bytes]:
+        # 整个发送+等待统一在 gforce 事件循环内串行（asyncio.Lock 不阻塞线程），
+        # 消除同 cmd 并发请求的响应归属竞态。
+        # 日志成对出现（dispatched/started）：只有前者没有后者即 gforce 事件
+        # 循环已卡死（投递的协程永远排不上），其内部超时也随之失效
+        self._log.d(_TAG, f"_send_request dispatched to gforce loop: {req.cmd.name}")
+        return await self._run_in_gforce_loop(self._send_request_on_gforce_loop(req, sync_gate, mark_stream_start))
 
-    async def _send_request_internal(self, req: Request) -> Optional[bytes]:
+    async def _send_request_on_gforce_loop(self, req: Request, sync_gate=None, mark_stream_start=False) -> Optional[bytes]:
+        self._log.d(_TAG, f"_send_request started on gforce loop: {req.cmd.name}")
+        lock = self._cmd_locks.setdefault(req.cmd, asyncio.Lock())
+        async with lock:
+            return await self._send_request_locked(req, sync_gate, mark_stream_start)
+
+    async def _send_request_locked(self, req: Request, sync_gate=None, mark_stream_start=False) -> Optional[bytes]:
         q = None
         if req.has_res:
             q = self._get_response_channel(req.cmd)
@@ -1309,6 +1656,13 @@ class GForce:
         if req.body is not None:
             bs += req.body
 
+        if sync_gate is not None:
+            # 多设备同步起流：CMD 写在 bumble 后端等待统一放行；
+            # 期望标识限定只有本命令写消费门闩，电量轮询等其它写直通
+            from sensor.bumble_dongle import arm_sync_write_gate
+
+            arm_sync_write_gate(self.client, sync_gate, ("write", req.cmd))
+
         # print(str(req.cmd) + str(req.body))
         response = False if self._chip_type == BLEChipType.RFSTAR else None
         try:
@@ -1319,18 +1673,30 @@ class GForce:
         except Exception as e:
             self.last_command_failure_time = time.time()
             self.last_command_failure_cmd = req.cmd
-            SdkLog.exception(_TAG, f"_send_request write_gatt_char failed: {req.cmd}")
+            self._log.exception(_TAG, f"_send_request write_gatt_char failed: {req.cmd}")
             if req.has_res:
                 self.responses[req.cmd] = None
             return None
+
+        # 命令写入成功后记录到 bin（[cmd][body...]）；
+        # perf_ns / ts_ms 取 bumble 层写下发前打点（门闩放行后），
+        # 使起流时刻反映 ATT 命令的实际发出时刻而非写完成时刻
+        ts_ms = self._write_bin_record(BIN_RECORD_CMD_SEND, bs,
+                                       self._backend_perf_ns("_last_write_perf_ns"),
+                                       self._backend_write_wall_ms())
+        if mark_stream_start:
+            # RFSTAR 起流时刻与 bin 的 cmd_send 记录取同一时间戳，
+            # 保证回放还原的 startTimeStamp 与 live 一致
+            self._note_stream_start_ts(ts_ms)
 
         if not req.has_res:
             return None
 
         try:
-            ret = q.get(timeout=2)
+            # 队列等待放到执行器线程，避免阻塞事件循环
+            ret = await asyncio.get_running_loop().run_in_executor(None, q.get, True, 2)
             return ret
         except Exception as e:
-            SdkLog.exception(_TAG, f"_send_request wait response failed: {req.cmd}")
+            self._log.exception(_TAG, f"_send_request wait response failed: {req.cmd}")
             self.responses[req.cmd] = None
             raise RuntimeError(f"_send_request wait response failed: {req.cmd}") from e

@@ -1,0 +1,20 @@
+# udev rules for the Synchroni sensor-sdk USB Bluetooth dongle (bumble host mode).
+# Grants local users libusb access to supported dongles; no sudo needed at runtime.
+# Install: sudo sensor/tools/setup_dongle_udev.sh
+
+# Actions ATS2851 Bluetooth 5.3 [UGREEN CM591]
+SUBSYSTEM=="usb", ATTR{idVendor}=="10d7", ATTR{idProduct}=="b012", TAG+="uaccess", MODE="0666"
+# Actions ATS2831 Bluetooth 5.2 [UGREEN CM672]
+SUBSYSTEM=="usb", ATTR{idVendor}=="10d7", ATTR{idProduct}=="b008", TAG+="uaccess", MODE="0666"
+# BARROT BRLINK Generic Bluetooth Adapter
+SUBSYSTEM=="usb", ATTR{idVendor}=="33fa", ATTR{idProduct}=="0001", TAG+="uaccess", MODE="0666"
+# UGREEN BCM20702A1 Bluetooth Dongle
+SUBSYSTEM=="usb", ATTR{idVendor}=="33fa", ATTR{idProduct}=="0010", TAG+="uaccess", MODE="0666"
+# BARROT 新型号
+SUBSYSTEM=="usb", ATTR{idVendor}=="33fa", ATTR{idProduct}=="0012", TAG+="uaccess", MODE="0666"
+
+# Other models: find the VID/PID with `lsusb` and append a line in the same format.
+# MODE="0666" also works where no logind session exists (WSL, containers, minimal
+# systems); to tighten access on multi-user production machines, drop MODE and keep
+# only TAG+="uaccess" (grants the local login session), or use GROUP="plugdev",
+# MODE="0664" (users must then be in the plugdev group).

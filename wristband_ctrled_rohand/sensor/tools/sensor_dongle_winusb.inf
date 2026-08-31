@@ -1,0 +1,38 @@
+; sensor_dongle_winusb.inf - binds supported USB Bluetooth dongles to the
+; inbox WinUSB driver so libusb (sensor-sdk bumble backend) can access them.
+; Installed by tools/setup_dongle_winusb.ps1 (signs the catalog, then
+; pnputil /add-driver /install).
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = USBDevice
+ClassGuid   = {88BAE032-5A81-49f0-BC3D-A4FF138216D6}
+Provider    = %ProviderName%
+CatalogFile = sensor_dongle_winusb.cat
+DriverVer   = 07/22/2026,1.0.0.0
+PnpLockDown = 1
+
+[Manufacturer]
+%ProviderName% = Dongles,NTamd64
+
+[Dongles.NTamd64]
+%DeviceDescA% = SensorDongle.Install, USB\VID_10D7&PID_B012
+%DeviceDescC% = SensorDongle.Install, USB\VID_10D7&PID_B008
+%DeviceDescG% = SensorDongle.Install, USB\VID_33FA&PID_0001
+%DeviceDescH% = SensorDongle.Install, USB\VID_33FA&PID_0010
+%DeviceDescB% = SensorDongle.Install, USB\VID_33FA&PID_0012
+
+[SensorDongle.Install]
+Include = winusb.inf
+Needs   = WINUSB.NT
+
+[SensorDongle.Install.Services]
+Include = winusb.inf
+Needs   = WINUSB.NT.Services
+
+[Strings]
+ProviderName = "Synchroni"
+DeviceDescA  = "Synchroni BLE Dongle 10d7:b012 (WinUSB)"
+DeviceDescC  = "Synchroni BLE Dongle 10d7:b008 (WinUSB)"
+DeviceDescG  = "Synchroni BLE Dongle 33fa:0001 (WinUSB)"
+DeviceDescH  = "Synchroni BLE Dongle 33fa:0010 (WinUSB)"
+DeviceDescB  = "Synchroni BLE Dongle 33fa:0012 (WinUSB)"

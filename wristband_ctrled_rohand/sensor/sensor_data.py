@@ -5,36 +5,76 @@ import flatbuffers
 
 
 class Sample:
+    """单个通道采样点（对齐 C++ SDK include/SensorData.hpp 的 SensorData::Sample）。
+
+    内部变量一律 _ 前缀；对外暴露与 C++ 公有字段同名的只读属性。
+    """
+
     __slots__ = [
-        "rawData",
-        "data",
-        "impedance",
-        "saturation",
-        "sampleIndex",
-        "isLost",
-        "timeStampInMs",
-        "channelIndex",
+        "_rawData",
+        "_data",
+        "_impedance",
+        "_saturation",
+        "_sampleIndex",
+        "_isLost",
+        "_absTimeStampInSec",
+        "_channelIndex",
     ]
 
     def __init__(self):
-        self.rawData = 0
-        self.data = 0.0
-        self.impedance = 0.0
-        self.saturation = 0.0
-        self.sampleIndex = 0
-        self.isLost = False
-        self.timeStampInMs = 0
-        self.channelIndex = 0
+        self._rawData = 0
+        self._data = 0.0
+        self._impedance = 0.0
+        self._saturation = 0.0
+        self._sampleIndex = 0
+        self._isLost = False
+        self._absTimeStampInSec = 0.0
+        self._channelIndex = 0
 
     def reset(self):
-        self.rawData = 0
-        self.data = 0.0
-        self.impedance = 0.0
-        self.saturation = 0.0
-        self.sampleIndex = 0
-        self.isLost = False
-        self.timeStampInMs = 0
-        self.channelIndex = 0
+        self._rawData = 0
+        self._data = 0.0
+        self._impedance = 0.0
+        self._saturation = 0.0
+        self._sampleIndex = 0
+        self._isLost = False
+        self._absTimeStampInSec = 0.0
+        self._channelIndex = 0
+
+    # ---- 与 C++ SensorData::Sample 公有字段同名的只读属性 ----
+    @property
+    def rawData(self) -> int:
+        return self._rawData
+
+    @property
+    def data(self) -> float:
+        return self._data
+
+    @property
+    def impedance(self) -> float:
+        return self._impedance
+
+    @property
+    def saturation(self) -> float:
+        return self._saturation
+
+    @property
+    def sampleIndex(self) -> int:
+        return self._sampleIndex
+
+    @property
+    def isLost(self) -> bool:
+        return self._isLost
+
+    @property
+    def absTimeStampInSec(self) -> float:
+        """LSL 风格绝对时间戳（Unix 秒，double）：起流墙钟 + sampleIndex/采样率，
+        解码时计算；锚点未知（如无 stream_start 记录的 bin 回放）为 0。"""
+        return self._absTimeStampInSec
+
+    @property
+    def channelIndex(self) -> int:
+        return self._channelIndex
 
 
 class DataType(IntEnum):
@@ -57,64 +97,228 @@ class DataType(IntEnum):
 
 
 class SensorData:
+    """多通道采样批（公有接口对齐 C++ SDK include/SensorData.hpp）。
+
+    内部变量一律 _ 前缀，公有接口为 C++ 同名方法：
+    getDeviceMac()/getDeviceName()/getDataType()/getLostPackageCount()/getSampleRate()/
+    getChannelCount()/getChannelMask()/getSampleCount()/getStartTimeStamp()/
+    getDelay()/getStartTimeSec()/isDataValid()/getChannelSample()/getData()/
+    getTimeStampInMs()（计算值：sampleIndex * 1000 / sampleRate）/
+    getAbsTimeStampInSec()/getSampleIndex()/getRawData()/getImpedance()/
+    getSaturation()/isLost()/clone()；C++ 公有字段 channelSamples/
+    startSampleIndex 以同名只读属性暴露。
+    """
+
     __slots__ = [
-        "deviceMac",
-        "dataType",
-        "sampleRate",
-        "channelCount",
-        "packageSampleCount",
-        "packageIndexLength",
-        "channelSamples",
-        "lastPackageCounter",
-        "lastPackageIndex",
-        "lostPackageCount",
-        "resolutionBits",
-        "resolutionSigned",
-        "channelMask",
-        "minPackageSampleCount",
-        "K",
+        "_deviceMac",
+        "_deviceName",
+        "_dataType",
+        "_sampleRate",
+        "_channelCount",
+        "_packageSampleCount",
+        "_packageIndexLength",
+        "_channelSamples",
+        "_lastPackageCounter",
+        "_lastPackageIndex",
+        "_lostPackageCount",
+        "_resolutionBits",
+        "_resolutionSigned",
+        "_channelMask",
+        "_minPackageSampleCount",
+        "_K",
+        "_startTimeStamp",
+        "_delay",
+        "_startTimeSec",
     ]
 
     def __init__(self):
-        self.deviceMac = ""
-        self.dataType = DataType.NTF_EEG
-        self.sampleRate = 0.0
-        self.channelCount = 0
-        self.packageSampleCount = 0
-        self.packageIndexLength = 2
-        self.channelSamples: List[List[Sample]] = list()
-        self.lastPackageCounter = 0
-        self.lastPackageIndex = 0
-        self.lostPackageCount = 0
-        self.resolutionBits = 0
-        self.resolutionSigned = 0
-        self.channelMask = 0
-        self.minPackageSampleCount = 0
-        self.K = 0.0
+        self._deviceMac = ""
+        self._deviceName = ""
+        self._dataType = DataType.NTF_EEG
+        self._sampleRate = 0.0
+        self._channelCount = 0
+        self._packageSampleCount = 0
+        self._packageIndexLength = 2
+        self._channelSamples: List[List[Sample]] = list()
+        self._lastPackageCounter = 0
+        self._lastPackageIndex = 0
+        self._lostPackageCount = 0
+        self._resolutionBits = 0
+        self._resolutionSigned = 0
+        self._channelMask = 0
+        self._minPackageSampleCount = 0
+        self._K = 0.0
+        # 本次起流的 ATT 起流写发送时刻（32 位毫秒）与首包 delay（毫秒，
+        # 首个原始数据包到达时刻 - startTimeStamp）；未起流为 0
+        self._startTimeStamp = 0
+        self._delay = 0
+        # 起流墙钟锚点（Unix 秒，double，LSL 风格）；回放从 bin 记录时间戳还原，
+        # 未知（如无 stream_start 记录的老 bin）为 0
+        self._startTimeSec = 0.0
 
     def reset(self):
-        self.deviceMac = ""
-        self.dataType = DataType.NTF_EEG
-        self.sampleRate = 0.0
-        self.channelCount = 0
-        self.packageSampleCount = 0
-        self.packageIndexLength = 2
-        self.channelSamples.clear()
-        self.lastPackageCounter = 0
-        self.lastPackageIndex = 0
-        self.lostPackageCount = 0
-        self.resolutionBits = 0
-        self.resolutionSigned = 0
-        self.channelMask = 0
-        self.minPackageSampleCount = 0
-        self.K = 0.0
+        self._deviceMac = ""
+        self._deviceName = ""
+        self._dataType = DataType.NTF_EEG
+        self._sampleRate = 0.0
+        self._channelCount = 0
+        self._packageSampleCount = 0
+        self._packageIndexLength = 2
+        self._channelSamples.clear()
+        self._lastPackageCounter = 0
+        self._lastPackageIndex = 0
+        self._lostPackageCount = 0
+        self._resolutionBits = 0
+        self._resolutionSigned = 0
+        self._channelMask = 0
+        self._minPackageSampleCount = 0
+        self._K = 0.0
+        self._startTimeStamp = 0
+        self._delay = 0
+        self._startTimeSec = 0.0
 
     def clear(self):
-        self.channelSamples.clear()
-        self.lastPackageCounter = -1
-        self.lastPackageIndex = 0
-        self.lostPackageCount = 0
+        self._channelSamples.clear()
+        self._lastPackageCounter = -1
+        self._lastPackageIndex = 0
+        self._lostPackageCount = 0
 
+    # ------------------------------------------------------------------
+    # C++ 公有接口（include/SensorData.hpp）：元数据访问器
+    # ------------------------------------------------------------------
+    def getDeviceMac(self) -> str:
+        return self._deviceMac
+
+    def getDeviceName(self) -> str:
+        return self._deviceName
+
+    def getDataType(self) -> DataType:
+        return self._dataType
+
+    def getLostPackageCount(self) -> int:
+        return self._lostPackageCount
+
+    def getSampleRate(self) -> float:
+        return self._sampleRate
+
+    def getChannelCount(self) -> int:
+        return self._channelCount
+
+    def getChannelMask(self) -> int:
+        return self._channelMask
+
+    def getSampleCount(self) -> int:
+        """每通道有效样本数（C++ Info::sampleCount，即历史 packageSampleCount）。"""
+        return self._packageSampleCount
+
+    def getStartTimeStamp(self) -> int:
+        return self._startTimeStamp
+
+    def getDelay(self) -> int:
+        return self._delay
+
+    def getStartTimeSec(self) -> float:
+        """起流墙钟锚点（Unix 秒，double）；未知为 0。"""
+        return self._startTimeSec
+
+    # C++ 公有字段的同名只读属性
+    @property
+    def channelSamples(self) -> List[List[Sample]]:
+        return self._channelSamples
+
+    @property
+    def startSampleIndex(self) -> int:
+        """本批首个样本的绝对 sampleIndex（无样本时为 0）。"""
+        if self._channelSamples and self._channelSamples[0]:
+            return self._channelSamples[0][0].sampleIndex
+        return 0
+
+    # ------------------------------------------------------------------
+    # C++ 公有接口：单点样本访问器
+    # ------------------------------------------------------------------
+    def isDataValid(self, channelIndex: int = 0, sampleIndex: int = 0) -> bool:
+        """Python 侧无 arena 复用语义，统一返回 True。"""
+        return True
+
+    def getChannelSample(self, channelIndex: int, sampleIndex: int) -> Sample:
+        if (channelIndex < 0 or channelIndex >= len(self._channelSamples)
+                or sampleIndex < 0
+                or sampleIndex >= len(self._channelSamples[channelIndex])):
+            raise IndexError(
+                f"SensorData: index out of range ({channelIndex}, {sampleIndex})")
+        return self._channelSamples[channelIndex][sampleIndex]
+
+    def getData(self, channelIndex: int, sampleIndex: int) -> float:
+        return self.getChannelSample(channelIndex, sampleIndex).data
+
+    def getTimeStampInMs(self, channelIndex: int, sampleIndex: int) -> int:
+        """样本毫秒时间戳（计算值：sampleIndex * 1000 / sampleRate，
+        采样率未知为 0；不再有存储字段）。"""
+        idx = self.getChannelSample(channelIndex, sampleIndex).sampleIndex
+        if self._sampleRate <= 0:
+            return 0
+        return int(idx * 1000.0 / self._sampleRate)
+
+    def getAbsTimeStampInSec(self, channelIndex: int, sampleIndex: int) -> float:
+        """样本绝对时间戳（LSL 风格 double 秒，纯访问；解码时已算好，
+        任意采样率下分辨率均为 1/采样率 秒）。"""
+        return self.getChannelSample(channelIndex, sampleIndex).absTimeStampInSec
+
+    def getSampleIndex(self, channelIndex: int, sampleIndex: int) -> int:
+        return self.getChannelSample(channelIndex, sampleIndex).sampleIndex
+
+    def getRawData(self, channelIndex: int, sampleIndex: int) -> int:
+        return self.getChannelSample(channelIndex, sampleIndex).rawData
+
+    def getImpedance(self, channelIndex: int, sampleIndex: int) -> float:
+        return self.getChannelSample(channelIndex, sampleIndex).impedance
+
+    def getSaturation(self, channelIndex: int, sampleIndex: int) -> float:
+        return self.getChannelSample(channelIndex, sampleIndex).saturation
+
+    def isLost(self, channelIndex: int, sampleIndex: int) -> bool:
+        return self.getChannelSample(channelIndex, sampleIndex).isLost
+
+    def clone(self) -> "SensorData":
+        """深拷贝有效数据窗口（样本与元数据均为独立副本）。"""
+        out = SensorData()
+        out._deviceMac = self._deviceMac
+        out._deviceName = self._deviceName
+        out._dataType = self._dataType
+        out._sampleRate = self._sampleRate
+        out._channelCount = self._channelCount
+        out._packageSampleCount = self._packageSampleCount
+        out._packageIndexLength = self._packageIndexLength
+        out._lastPackageCounter = self._lastPackageCounter
+        out._lastPackageIndex = self._lastPackageIndex
+        out._lostPackageCount = self._lostPackageCount
+        out._resolutionBits = self._resolutionBits
+        out._resolutionSigned = self._resolutionSigned
+        out._channelMask = self._channelMask
+        out._minPackageSampleCount = self._minPackageSampleCount
+        out._K = self._K
+        out._startTimeStamp = self._startTimeStamp
+        out._delay = self._delay
+        out._startTimeSec = self._startTimeSec
+        for channel in self._channelSamples:
+            copied_channel = []
+            for sample in channel:
+                copied = Sample()
+                copied._rawData = sample._rawData
+                copied._data = sample._data
+                copied._impedance = sample._impedance
+                copied._saturation = sample._saturation
+                copied._sampleIndex = sample._sampleIndex
+                copied._isLost = sample._isLost
+                copied._absTimeStampInSec = sample._absTimeStampInSec
+                copied._channelIndex = sample._channelIndex
+                copied_channel.append(copied)
+            out._channelSamples.append(copied_channel)
+        return out
+
+    # ------------------------------------------------------------------
+    # FlatBuffers 序列化（SDK 内部）
+    # ------------------------------------------------------------------
     def to_flatbuffers(self) -> bytes:
         """将 SensorData 序列化为 FlatBuffers bytes。"""
         import sensor.fb.SensorData as FBSensorData
@@ -125,7 +329,7 @@ class SensorData:
         # 扁平化 channelSamples
         flat_samples = []
         samples_per_channel = []
-        for channel in self.channelSamples:
+        for channel in self._channelSamples:
             samples_per_channel.append(len(channel))
             for sample in channel:
                 flat_samples.append(sample)
@@ -137,14 +341,14 @@ class SensorData:
             for sample in reversed(flat_samples):
                 FBSample.CreateSample(
                     builder,
-                    int(sample.timeStampInMs),
-                    int(sample.channelIndex),
-                    int(sample.sampleIndex),
-                    int(sample.rawData),
-                    float(sample.data),
-                    float(sample.impedance),
-                    float(sample.saturation),
-                    bool(sample.isLost),
+                    float(sample._absTimeStampInSec),
+                    int(sample._channelIndex),
+                    int(sample._sampleIndex),
+                    int(sample._rawData),
+                    float(sample._data),
+                    float(sample._impedance),
+                    float(sample._saturation),
+                    bool(sample._isLost),
                 )
             samples_offset = builder.EndVector()
 
@@ -156,25 +360,28 @@ class SensorData:
                 builder.PrependInt32(count)
             spc_offset = builder.EndVector()
 
-        # device_mac 字符串
-        mac_offset = builder.CreateString(self.deviceMac) if self.deviceMac else 0
+        # device_mac / device_name 字符串
+        mac_offset = builder.CreateString(self._deviceMac) if self._deviceMac else 0
+        name_offset = builder.CreateString(self._deviceName) if self._deviceName else 0
 
         FBSensorData.Start(builder)
         if mac_offset:
             FBSensorData.AddDeviceMac(builder, mac_offset)
-        FBSensorData.AddDataType(builder, int(self.dataType))
-        FBSensorData.AddLastPackageCounter(builder, int(self.lastPackageCounter))
-        FBSensorData.AddLastPackageIndex(builder, int(self.lastPackageIndex))
-        FBSensorData.AddLostPackageCount(builder, int(self.lostPackageCount))
-        FBSensorData.AddResolutionBits(builder, int(self.resolutionBits))
-        FBSensorData.AddResolutionSigned(builder, int(self.resolutionSigned))
-        FBSensorData.AddSampleRate(builder, float(self.sampleRate))
-        FBSensorData.AddChannelCount(builder, int(self.channelCount))
-        FBSensorData.AddChannelMask(builder, int(self.channelMask))
-        FBSensorData.AddMinPackageSampleCount(builder, int(self.minPackageSampleCount))
-        FBSensorData.AddPackageSampleCount(builder, int(self.packageSampleCount))
-        FBSensorData.AddPackageIndexLength(builder, int(self.packageIndexLength))
-        FBSensorData.AddK(builder, float(self.K))
+        if name_offset:
+            FBSensorData.AddDeviceName(builder, name_offset)
+        FBSensorData.AddDataType(builder, int(self._dataType))
+        FBSensorData.AddLastPackageCounter(builder, int(self._lastPackageCounter))
+        FBSensorData.AddLastPackageIndex(builder, int(self._lastPackageIndex))
+        FBSensorData.AddLostPackageCount(builder, int(self._lostPackageCount))
+        FBSensorData.AddResolutionBits(builder, int(self._resolutionBits))
+        FBSensorData.AddResolutionSigned(builder, int(self._resolutionSigned))
+        FBSensorData.AddSampleRate(builder, float(self._sampleRate))
+        FBSensorData.AddChannelCount(builder, int(self._channelCount))
+        FBSensorData.AddChannelMask(builder, int(self._channelMask))
+        FBSensorData.AddMinPackageSampleCount(builder, int(self._minPackageSampleCount))
+        FBSensorData.AddPackageSampleCount(builder, int(self._packageSampleCount))
+        FBSensorData.AddPackageIndexLength(builder, int(self._packageIndexLength))
+        FBSensorData.AddK(builder, float(self._K))
         if samples_offset:
             FBSensorData.AddSamples(builder, samples_offset)
         if spc_offset:
@@ -198,22 +405,24 @@ class SensorData:
         fb = FBSensorData.SensorData.GetRootAs(buf, 0)
 
         mac = fb.DeviceMac()
-        data.deviceMac = mac.decode('utf-8') if isinstance(mac, bytes) else (mac or "")
-        data.dataType = DataType(fb.DataType())
-        data.lastPackageCounter = fb.LastPackageCounter()
-        data.lastPackageIndex = fb.LastPackageIndex()
-        data.lostPackageCount = fb.LostPackageCount()
-        data.resolutionBits = fb.ResolutionBits()
-        data.resolutionSigned = fb.ResolutionSigned()
-        data.sampleRate = fb.SampleRate()
-        data.channelCount = fb.ChannelCount()
-        data.channelMask = fb.ChannelMask()
-        data.minPackageSampleCount = fb.MinPackageSampleCount()
-        data.packageSampleCount = fb.PackageSampleCount()
-        data.packageIndexLength = fb.PackageIndexLength()
-        data.K = fb.K()
+        data._deviceMac = mac.decode('utf-8') if isinstance(mac, bytes) else (mac or "")
+        name = fb.DeviceName()
+        data._deviceName = name.decode('utf-8') if isinstance(name, bytes) else (name or "")
+        data._dataType = DataType(fb.DataType())
+        data._lastPackageCounter = fb.LastPackageCounter()
+        data._lastPackageIndex = fb.LastPackageIndex()
+        data._lostPackageCount = fb.LostPackageCount()
+        data._resolutionBits = fb.ResolutionBits()
+        data._resolutionSigned = fb.ResolutionSigned()
+        data._sampleRate = fb.SampleRate()
+        data._channelCount = fb.ChannelCount()
+        data._channelMask = fb.ChannelMask()
+        data._minPackageSampleCount = fb.MinPackageSampleCount()
+        data._packageSampleCount = fb.PackageSampleCount()
+        data._packageIndexLength = fb.PackageIndexLength()
+        data._K = fb.K()
 
-        data.channelSamples.clear()
+        data._channelSamples.clear()
         samples_len = fb.SamplesLength()
         spc_len = fb.SamplesPerChannelLength()
 
@@ -226,16 +435,16 @@ class SensorData:
                     break
                 fb_sample = fb.Samples(offset)
                 sample = pool.acquire_sample() if pool is not None else Sample()
-                sample.timeStampInMs = fb_sample.TimeStampInMs()
-                sample.channelIndex = fb_sample.ChannelIndex()
-                sample.sampleIndex = fb_sample.SampleIndex()
-                sample.rawData = fb_sample.RawData()
-                sample.data = fb_sample.Data()
-                sample.impedance = fb_sample.Impedance()
-                sample.saturation = fb_sample.Saturation()
-                sample.isLost = fb_sample.IsLost()
+                sample._absTimeStampInSec = fb_sample.AbsTimeStampInSec()
+                sample._channelIndex = fb_sample.ChannelIndex()
+                sample._sampleIndex = fb_sample.SampleIndex()
+                sample._rawData = fb_sample.RawData()
+                sample._data = fb_sample.Data()
+                sample._impedance = fb_sample.Impedance()
+                sample._saturation = fb_sample.Saturation()
+                sample._isLost = fb_sample.IsLost()
                 channel.append(sample)
                 offset += 1
-            data.channelSamples.append(channel)
+            data._channelSamples.append(channel)
 
         return data

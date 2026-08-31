@@ -51,6 +51,11 @@ class DeviceInfo:
         self.EegSampleRate = 0
         self.EcgChannelCount = 0
         self.EcgSampleRate = 0
+        # 设备能力查询（get_emg/eeg/ecg_raw_data_cap）返回的最高采样率；
+        # 0 表示设备未上报或不支持该查询
+        self.EmgMaxSampleRate = 0
+        self.EegMaxSampleRate = 0
+        self.EcgMaxSampleRate = 0
         self.AccChannelCount = 0
         self.AccSampleRate = 0
         self.GyroChannelCount = 0
@@ -63,7 +68,16 @@ class DeviceInfo:
         self.EulerSampleRate = 0
         self.QuatChannelCount = 0
         self.QuatSampleRate = 0
+        # NTF_IMU 聚合流信息（acc+gyro+euler+quat 合并广播，仅新 EMG 设备提供；
+        # 0 表示无聚合流，应用应改用 ACC/GYRO/EULER/QUAT 独立流）
+        self.ImuChannelCount = 0
+        self.ImuSampleRate = 0
         self.MTUSize = 0
+        # 链路连接参数（仅 bumble 后端可获取，原生 bleak 后端为未知值；
+        # 外设连接后可能通过 L2CAP 更新，经 onDeviceInfoUpdate 事件刷新）
+        self.ConnectionIntervalMs = 0.0  # 连接间隔，毫秒；0 = 未知
+        self.PeripheralLatency = -1      # 从设备延迟，事件数；-1 = 未知（0 是合法值）
+        self.SupervisionTimeoutMs = 0    # 监督超时，毫秒；0 = 未知
 
 
 class DeviceStateEx(Enum):

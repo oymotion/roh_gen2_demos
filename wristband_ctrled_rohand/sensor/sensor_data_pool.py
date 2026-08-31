@@ -59,12 +59,12 @@ class SensorDataPool:
         if sd is None:
             return
         # 把 channelSamples 里的 Sample 尽量回收到 sample 池
-        for channel in sd.channelSamples:
+        for channel in sd._channelSamples:
             for sample in channel:
                 if len(self._sample_pool) < self._samples_per_slot:
                     sample.reset()
                     self._sample_pool.append(sample)
-        sd.channelSamples.clear()
+        sd._channelSamples.clear()
         sd.reset()
         if len(self._sensor_data_pool) < self._sensor_data_slots:
             self._sensor_data_pool.append(sd)
