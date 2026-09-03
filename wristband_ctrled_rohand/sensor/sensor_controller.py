@@ -460,6 +460,152 @@ class SensorController:
         SdkLog.w(_TAG, f"replayBinFile: replay published {expected} data messages but only "
                        f"{sensor._received_sensor_data_msgs - baseline} arrived within {timeout}s")
 
+    @staticmethod
+    def _scan_bin_data_span(file_path: str) -> Optional[Tuple[int, int]]:
+        """扫描 bin 文件首/末条数据记录的时间戳，无数据记录或文件不可读返回 None。"""
+        first_ts = None
+        last_ts = None
+        try:
+            for rec_type, ts, _payload in iter_bin_records(file_path):
+                if rec_type == BIN_RECORD_DATA:
+                    if first_ts is None:
+                        first_ts = ts
+                    last_ts = ts
+        except Exception:
+            return None
+        if first_ts is None:
+            return None
+        return (first_ts, last_ts)
+
+    def multiReplayBinFile(
+        self,
+        file_paths: List[str],
+        sensors: Optional[List[Optional[SensorProfile]]] = None,
+        realtime: bool = True,
+        timeout: Optional[float] = None,
+    ) -> List[Optional[SensorProfile]]:
+        """同步回放多个 bin 文件：所有成员共享一个对齐时钟（对照 C++ SDK
+        multiReplayBinFile / BinReplay::startGroup）。
+
+        每个成员按记录时间戳对齐到同一组时钟——全组最早的首条数据记录为
+        t=0，保留采集时的相对偏移（晚开始录制的设备首包相应晚到）；
+        ``pauseBinReplay`` / ``resumeBinReplay`` 任一成员会暂停/恢复整组，
+        ``stopBinReplay`` 仍按设备单独生效。
+
+        Args:
+            file_paths: bin 文件路径列表。
+            sensors: 与 file_paths 对齐的 SensorProfile 列表；某项为 None
+                （或整个参数为 None）时按对应 bin 文件的配置记录自动创建
+                （或复用同 MAC 的已有 profile）。
+            realtime: True 按对齐时钟回放；False 各成员全速回放（不对齐）。
+            timeout: 等待全部成员完成的超时时间（秒）；为 None 时按组内
+                最晚结束时刻自动估算（realtime）或使用默认值 600 秒。
+
+        Returns:
+            与 file_paths 对齐的列表；对应成员未能开始或回放失败时为 None
+            （文件不存在/无配置记录/MAC 重复/设备正在传输或已在回放）。
+        """
+        SdkLog.controller(_TAG, f"multiReplayBinFile called: {file_paths} realtime={realtime}")
+        count = len(file_paths or [])
+        if sensors is not None and len(sensors) != count:
+            raise ValueError("sensors must align with file_paths")
+        results: List[Optional[SensorProfile]] = [None] * count
+        if count == 0:
+            return results
+        self._ensure_bleak_host()
+
+        participants = []  # (slot, sensor, path)
+        seen = set()
+        for i, path in enumerate(file_paths):
+            sensor = sensors[i] if sensors else None
+            if not path or not os.path.isfile(path):
+                SdkLog.e(_TAG, f"multiReplayBinFile: file not found: {path}")
+                continue
+            if sensor is None:
+                config = self.getBinFileInfo(path)
+                if config is None:
+                    SdkLog.e(_TAG, f"multiReplayBinFile: no config record in {path}")
+                    continue
+                mac = config.get("device_mac")
+                if not mac:
+                    SdkLog.e(_TAG, f"multiReplayBinFile: config record missing device_mac in {path}")
+                    continue
+                name = config.get("device_name") or ""
+                with self._profiles_lock:
+                    sensor = self._sensor_profiles.get(mac)
+                    if sensor is None:
+                        sensor = SensorProfile(device=BLEDevice(name, mac, 0), bleak_host=self._bleak_host)
+                        self._sensor_profiles[mac] = sensor
+            mac = sensor.BLEDevice.Address
+            if mac in seen:
+                SdkLog.w(_TAG, f"multiReplayBinFile: duplicate mac {mac}")
+                continue
+            seen.add(mac)
+            if sensor._is_data_transfering:
+                # 正在实时传输或已有回放在进行（回放期间同样置传输标志）
+                SdkLog.w(_TAG, f"multiReplayBinFile: device is streaming or replaying {mac}")
+                continue
+            participants.append((i, sensor, path))
+        if not participants:
+            return results
+
+        if timeout is None:
+            if realtime:
+                # 组时钟下成员 i 的结束时刻 ≈ (last_ts_i - origin) / 1000，
+                # origin 为全组最早首条数据记录 ts
+                spans = {s.BLEDevice.Address: self._scan_bin_data_span(p)
+                         for _, s, p in participants}
+                known = [span for span in spans.values() if span is not None]
+                if known:
+                    origin = min(span[0] for span in known)
+                    timeout = max(60.0, max((span[1] - origin) / 1000.0 for span in known) + 30.0)
+                else:
+                    timeout = 60.0
+            else:
+                timeout = 600.0
+
+        baselines = {}
+        try:
+            for _, sensor, _ in participants:
+                sensor._set_data_transfering(True)
+                baselines[sensor.BLEDevice.Address] = sensor._received_sensor_data_msgs
+            cmd = {
+                "type": "multi_replay_bin",
+                "realtime": bool(realtime),
+                "members": [
+                    {"device_mac": s.BLEDevice.Address, "path": os.path.abspath(p)}
+                    for _, s, p in participants
+                ],
+            }
+            cmd_result = self._bleak_host.send_command_sync(cmd, timeout=timeout)
+            if not cmd_result:
+                # 超时无结果：子进程可能仍在回放（与 replayBinFile 超时语义一致）
+                SdkLog.w(_TAG, f"multiReplayBinFile: no result within timeout={timeout}s, "
+                               "replay may still be running")
+                for slot, sensor, _ in participants:
+                    results[slot] = sensor
+                return results
+            per_device = cmd_result.get("result") or {}
+            published = cmd_result.get("published_data_msgs") or {}
+            for slot, sensor, _ in participants:
+                mac = sensor.BLEDevice.Address
+                res = per_device.get(mac)
+                if isinstance(res, str) and res.startswith("OK"):
+                    # 与单设备回放相同：等本次回放发布的数据消息全部到达后
+                    # 再恢复传输标志，避免滞留消息被当作流外迟到数据丢弃
+                    expected = published.get(mac) or 0
+                    if expected > 0:
+                        self._wait_replay_data_arrived(sensor, baselines[mac], expected)
+                    results[slot] = sensor
+                else:
+                    SdkLog.e(_TAG, f"multiReplayBinFile failed: {mac}: {res}")
+        finally:
+            for _, sensor, _ in participants:
+                sensor._set_data_transfering(False)
+        SdkLog.controller(_TAG, f"multiReplayBinFile finished: "
+                                f"{sum(1 for r in results if r is not None)}/{count} ok")
+        return results
+
     def pauseBinReplay(self, sensor: SensorProfile) -> str:
         """暂停 sensor 上正在进行的 bin 文件回放。"""
         return self._setBinReplayPaused(sensor, True)

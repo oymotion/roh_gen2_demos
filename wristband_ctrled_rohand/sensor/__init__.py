@@ -5,7 +5,7 @@ from sensor.sensor_data import DataType, Sample, SensorData
 from sensor.sensor_utils import checkSetupDongle
 from sensor.winrt_high_throughput import apply as _apply_winrt_high_throughput_patch
 
-__version__ = "0.9.6"
+__version__ = "0.9.7"
 
 _apply_winrt_high_throughput_patch()
 

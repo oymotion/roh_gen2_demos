@@ -39,6 +39,8 @@ NUM_FINGERS = 5
 terminated = False
 gestureID = 0
 
+GEST_DEBUG = False
+
 def terminate():
     global terminated
     terminated = True
@@ -170,39 +172,44 @@ async def main():
                 print(f"init device {sensor.BLEDevice.Name} failed after {MAX_RETRIES} attempts, skip")
                 continue
 
-            await sensor.asyncSetParam("NTF_GEST", "ON")
+            gest_result = await sensor.asyncSetParam("NTF_GEST", "ON")
+            print(f"setParam NTF_GEST result: {gest_result}")
             deviceInfo = sensor.getDeviceInfo()
             print("deviceInfo: Model: " + str(deviceInfo.ModelName))
 
         if sensor.hasInited:
             print("start data transfer")
-            if not await sensor.asyncStartDataNotification():
+            start_result = await sensor.asyncStartDataNotification()
+            print(f"startDataNotification result: {start_result}, isTransfering: {sensor.isDataTransfering}")
+            if not start_result:
                 print("start data transfer with device: " + sensor.BLEDevice.Name + " failed")
                 continue
 
-        pre_gestID = 0
+        pre_gestID = -1
+        loop_count = 0
         while not terminated:
-            await asyncio.sleep(0.5)
-            print(f"gesture ID: {gestureID}, pre_gestID: {pre_gestID}")
-            if (gestureID != pre_gestID):
-                match (gestureID):
-                    case 0:
-                        continue
-                    case 1:
-                        await gestures_control(GESTURES["FIST"])
-                    case 2:
-                        await gestures_control(GESTURES["SPREAD"])
-                    case 3:
-                        await gestures_control(GESTURES["SHOOT"])
-                    case 4:
-                        await gestures_control(GESTURES["ROCK"])
-                    case 5:
-                        continue
+            await asyncio.sleep(0.2)
+            loop_count += 1
 
-                pre_gestID = gestureID
-            else:
+            if gestureID == pre_gestID:
+                if loop_count % 25 == 0:
+                    print(f"[heartbeat] gesture ID: {gestureID}, transferring: "
+                          f"{sensor.isDataTransfering}, state: {sensor.deviceState}")
                 continue
-            pass
+
+            pre_gestID = gestureID
+
+            match gestureID:
+                case 1:
+                    await gestures_control(GESTURES["FIST"])
+                case 2:
+                    await gestures_control(GESTURES["SPREAD"])
+                case 3:
+                    await gestures_control(GESTURES["SHOOT"])
+                case 4:
+                    await gestures_control(GESTURES["ROCK"])
+                case _:
+                    pass
 
         await sensor.stopDataNotification()
         await sensor.disconnect()
@@ -211,12 +218,25 @@ async def main():
     # SensorControllerInstance.terminate()
 
 
-def onDataCallback(sensor: SensorProfile, data: SensorData):
+def onDataCallback(sensor: SensorProfile, data_list: list):
     global gestureID
-    if data.dataType == DataType.NTF_GEST:
-        gestureID = data.channelSamples[0][0].data
-    pass
-
+    for data in data_list:
+        if data.getDataType() != DataType.NTF_GEST:
+            continue
+        if not data.channelSamples or not data.channelSamples[0]:
+            continue
+        try:
+            new_id = int(data.getData(0, 0))
+            raw_id = int(data.getRawData(0, 0))
+        except IndexError:
+            continue
+        if GEST_DEBUG:
+            print(f"[GEST] data={new_id}, rawData={raw_id}, "
+                  f"impedance={data.getImpedance(0, 0)}, "
+                  f"saturation={data.getSaturation(0, 0)}")
+        if new_id != gestureID:
+            print(f"[GEST] gesture ID changed: {gestureID} -> {new_id} (raw={raw_id})")
+        gestureID = new_id
 
 def onPowerChanged(sensor: SensorProfile, power: int):
     # print("connected sensor: " + sensor.BLEDevice.Name + " power: " + str(power))
@@ -228,8 +248,7 @@ def onStateChanged(sensor: SensorProfile, newstate: DeviceStateEx):
 
 
 def onErrorCallback(sensor: SensorProfile, reason: str):
-    print("device: " + sensor.BLEDevice.Name + reason)
-    pass
+    print(f"[ERROR] device: {sensor.BLEDevice.Name} reason: {reason}")
 
 
 if __name__ == "__main__":

@@ -512,7 +512,7 @@ class BleakProcess(multiprocessing.Process):
         asyncio.run_coroutine_threadsafe(
             self._do_start_scan(period), self._ensure_scan_loop())
 
-    async def _discard_dongle_transport(self, spec: str):
+    async def _discard_dongle_transport(self, spec):
         """dongle 离开（拔出/总线复位）或扫描轮异常后，清理 bleak_bumble 传输缓存。
 
         bleak_bumble 的 transports 按 spec 字符串缓存复用传输（patch 5 让连接
@@ -542,7 +542,7 @@ class BleakProcess(multiprocessing.Process):
         except Exception:
             SdkLog.exception(_TAG, f"Failed to discard dongle transport for {spec}")
 
-    async def _note_scan_round_result(self, spec: str, device_count: int):
+    async def _note_scan_round_result(self, spec, device_count: int):
         """扫描空结果看门狗：连续空轮达阈值时弹出缓存传输，强制下轮重开。
 
         异常断连后缓存传输可能半死——HCI 命令有应答（power_on/start_scanning
@@ -913,6 +913,12 @@ class BleakProcess(multiprocessing.Process):
             await self._do_replay_bin(cmd)
             return
 
+        # 多 bin 共享时钟同步回放：主循环协调各成员回放任务，按记录时间戳
+        # 对齐到同一组时钟（对照 C++ SDK BinReplay::startGroup）
+        if cmd_type == "multi_replay_bin":
+            await self._do_multi_replay_bin(cmd)
+            return
+
         # 多设备同步起流：主循环协调各设备 loop，起流写命令在 bumble 后端
         # 等待同一个 SyncWriteGate 放行后几乎同时下发
         if cmd_type == "multi_start_notification":
@@ -930,7 +936,19 @@ class BleakProcess(multiprocessing.Process):
             ctrl = self._replay_controls.get(device_mac)
             paused = bool(cmd.get("paused", True))
             if ctrl is not None:
-                ctrl["paused"] = paused
+                group = ctrl.get("group")
+                if group is not None:
+                    # 组回放：暂停/恢复作用于共享时钟，整组一起冻结/恢复；
+                    # 恢复时把暂停跨度补进组时钟起点，保持对齐（对照 C++
+                    # BinReplay::pause/resume 的 group 分支）
+                    if paused and not group["paused"]:
+                        group["paused"] = True
+                        group["paused_at"] = time.monotonic()
+                    elif not paused and group["paused"]:
+                        group["start_wall"] += time.monotonic() - group["paused_at"]
+                        group["paused"] = False
+                else:
+                    ctrl["paused"] = paused
             self._publish(
                 "command_result",
                 cmd_id=cmd.get("cmd_id"),
@@ -2105,23 +2123,128 @@ class BleakProcess(multiprocessing.Process):
         - 配置记录会在回放过程中按顺序应用（与录制时的 init 时序一致）。
         """
         device_mac = cmd["device_mac"]
-        path = cmd.get("path", "")
-        realtime = bool(cmd.get("realtime", True))
-        cmd_id = cmd.get("cmd_id")
+        ctrl = {"paused": False, "stop": False, "group": None}
+        self._replay_controls[device_mac] = ctrl
+        try:
+            error, result, published = await self._replay_bin_run(
+                device_mac, cmd.get("path", ""), bool(cmd.get("realtime", True)), ctrl)
+        finally:
+            self._replay_controls.pop(device_mac, None)
+        SdkLog.i(_TAG, f"Replay bin finished: {device_mac} {result}", mac=device_mac)
+        self._publish(
+            "command_result",
+            cmd_id=cmd.get("cmd_id"),
+            device_mac=device_mac,
+            success=(error is None),
+            result=result,
+            published_data_msgs=published,
+        )
 
+    async def _do_multi_replay_bin(self, cmd: dict):
+        """多 bin 共享时钟同步回放（对照 C++ SDK BinReplay::startGroup）。
+
+        各成员按记录时间戳对齐到同一组时钟：全组最早首条数据记录为 t=0，
+        保留采集时的相对偏移（晚开始录制的设备首包相应晚到）；暂停/恢复
+        任一成员冻结/恢复整组时钟，停止仍按设备单独生效。失败成员
+        （空/重复 MAC、正在实时传输或已在回放、文件不可读）不影响其余成员。
+        """
+        members = cmd.get("members") or []
+        realtime = bool(cmd.get("realtime", True))
+
+        per_device = {}
+        published = {}
+        valid = []  # (mac, path, first_ts)
+        seen = set()
+        for m in members:
+            mac = m.get("device_mac") or ""
+            path = m.get("path") or ""
+            if not mac or mac in seen:
+                continue
+            seen.add(mac)
+            if mac in self._replay_controls:
+                per_device[mac] = "Error: replay already running"
+                continue
+            ctx = self._data_ctxs.get(mac)
+            if ctx is not None and ctx.gForce is not None and ctx.isDataTransfering:
+                per_device[mac] = "Error: device is streaming, stop data notification before replay"
+                continue
+            # 预扫描首条数据记录 ts（无数据记录时取首条记录 ts）作组对齐基准
+            first_ts = None
+            try:
+                for record_type, ts, _payload in iter_bin_records(path):
+                    if first_ts is None or record_type == BIN_RECORD_DATA:
+                        first_ts = ts
+                    if record_type == BIN_RECORD_DATA:
+                        break
+            except Exception:
+                first_ts = None
+            if first_ts is None:
+                per_device[mac] = "Error: cannot read bin file: " + path
+                SdkLog.e(_TAG, f"multi replay: cannot read bin file: {path}", mac=mac)
+                continue
+            valid.append((mac, path, first_ts))
+
+        if valid:
+            # 组时钟：origin 为全组最早首条数据记录 ts；起点留 300ms 让各
+            # 成员完成上下文建立后再进 t=0（对照 C++ startWallMs = now+300）
+            group = {
+                "origin_ts_ms": min(t for _, _, t in valid),
+                "start_wall": time.monotonic() + 0.3,
+                "paused": False,
+                "paused_at": None,
+            }
+            SdkLog.i(_TAG, f"multi replay group start: members={len(valid)}")
+            ctrls = {}
+            for mac, _path, _ts in valid:
+                ctrls[mac] = {"paused": False, "stop": False, "group": group}
+            self._replay_controls.update(ctrls)
+            tasks = [
+                (mac, asyncio.create_task(
+                    self._replay_bin_run(mac, path, realtime, ctrls[mac], group)))
+                for mac, path, _ts in valid
+            ]
+            try:
+                outcomes = await asyncio.gather(
+                    *(task for _, task in tasks), return_exceptions=True)
+            finally:
+                for mac in ctrls:
+                    self._replay_controls.pop(mac, None)
+            for (mac, _task), outcome in zip(tasks, outcomes):
+                if isinstance(outcome, Exception):
+                    SdkLog.exception(
+                        _TAG, f"multi replay member crashed: {mac}: {outcome}", mac=mac)
+                    per_device[mac] = "Error: " + str(outcome)
+                    published[mac] = 0
+                else:
+                    _error, result, published_delta = outcome
+                    per_device[mac] = result
+                    published[mac] = published_delta
+                SdkLog.i(_TAG, f"Replay bin finished: {mac} {per_device[mac]}", mac=mac)
+
+        self._publish(
+            "command_result",
+            cmd_id=cmd.get("cmd_id"),
+            success=(bool(per_device) and all(
+                str(v).startswith("OK") for v in per_device.values())),
+            result=per_device,
+            published_data_msgs=published,
+        )
+
+    async def _replay_bin_run(self, device_mac: str, path: str, realtime: bool,
+                              ctrl: dict, group=None):
+        """执行单成员 bin 回放循环，返回 (error, result, published_data_msgs)。
+
+        error 为 None 表示成功（含用户主动停止）；group 非空时为组回放，
+        按共享时钟绝对对齐投喂。上下文的获取/创建与清理由本函数负责，
+        控制标志注册与结果发布由调用方负责。
+        """
         ctx = self._data_ctxs.get(device_mac)
         owns_ctx = False
         prev_transfering = False
 
         if ctx is not None and ctx.gForce is not None and ctx.isDataTransfering:
-            self._publish(
-                "command_result",
-                cmd_id=cmd_id,
-                device_mac=device_mac,
-                success=False,
-                result="Error: device is streaming, stop data notification before replay",
-            )
-            return
+            result = "Error: device is streaming, stop data notification before replay"
+            return (result, result, 0)
 
         if ctx is None:
             try:
@@ -2134,14 +2257,8 @@ class BleakProcess(multiprocessing.Process):
                 )
             except Exception as e:
                 SdkLog.exception(_TAG, f"Create replay context failed: {device_mac}", mac=device_mac)
-                self._publish(
-                    "command_result",
-                    cmd_id=cmd_id,
-                    device_mac=device_mac,
-                    success=False,
-                    result="Error: " + str(e),
-                )
-                return
+                result = "Error: " + str(e)
+                return (result, result, 0)
             self._data_ctxs[device_mac] = ctx
             owns_ctx = True
             # 回放中配置记录切换可能改变采样率（load_replay_config 检测并回调），
@@ -2161,16 +2278,15 @@ class BleakProcess(multiprocessing.Process):
         error = None
         stopped = False
         pending_first_packet_ts = False  # 起流标记后等待首个数据包以还原 delay
-        ctrl = {"paused": False, "stop": False}
-        self._replay_controls[device_mac] = ctrl
         try:
             SdkLog.i(_TAG, f"Replay bin start: {device_mac} file={path} realtime={realtime}", mac=device_mac)
             for record_type, ts, payload in iter_bin_records(path):
                 if self._should_exit or ctrl["stop"]:
                     stopped = ctrl["stop"]
                     break
-                # 暂停：保持当前位置等待恢复或停止
-                while ctrl["paused"] and not self._should_exit and not ctrl["stop"]:
+                # 暂停：保持当前位置等待恢复或停止；组成员额外受组时钟冻结控制
+                while (ctrl["paused"] or (group is not None and group["paused"])) \
+                        and not self._should_exit and not ctrl["stop"]:
                     await asyncio.sleep(0.1)
                 if self._should_exit or ctrl["stop"]:
                     stopped = ctrl["stop"]
@@ -2238,7 +2354,27 @@ class BleakProcess(multiprocessing.Process):
                     pending_first_packet_ts = False
                     ctx._stream_first_delay_ms = (
                         (ts & 0xFFFFFFFF) - ctx._stream_start_ts_ms) & 0xFFFFFFFF
-                if realtime and last_ts is not None and ts > last_ts:
+                if realtime and group is not None:
+                    # 组模式：按组时钟对齐的绝对墙钟时刻投喂（跨成员绝对对齐，
+                    # 不做 5s 间隔封顶，对照 C++ group 分支）；组时钟暂停期间
+                    # 冻结等待，恢复后 start_wall 已被平移，对齐保持
+                    while True:
+                        if self._should_exit or ctrl["stop"]:
+                            stopped = ctrl["stop"]
+                            break
+                        if ctrl["paused"] or group["paused"]:
+                            await asyncio.sleep(0.1)
+                            continue
+                        remaining = (group["start_wall"]
+                                     + (ts - group["origin_ts_ms"]) / 1000.0
+                                     - time.monotonic())
+                        if remaining <= 0:
+                            break
+                        await asyncio.sleep(min(remaining, 0.1))
+                    if self._should_exit or ctrl["stop"]:
+                        stopped = ctrl["stop"]
+                        break
+                elif realtime and last_ts is not None and ts > last_ts:
                     await self._replay_pace_sleep(min((ts - last_ts) / 1000.0, 5.0), ctrl)
                     if self._should_exit or ctrl["stop"]:
                         stopped = ctrl["stop"]
@@ -2276,7 +2412,6 @@ class BleakProcess(multiprocessing.Process):
             error = "Error: " + str(e)
             result = error
         finally:
-            self._replay_controls.pop(device_mac, None)
             if owns_ctx:
                 try:
                     ctx.close()
@@ -2287,15 +2422,7 @@ class BleakProcess(multiprocessing.Process):
             else:
                 ctx._is_data_transfering = prev_transfering
 
-        SdkLog.i(_TAG, f"Replay bin finished: {device_mac} {result}", mac=device_mac)
-        self._publish(
-            "command_result",
-            cmd_id=cmd_id,
-            device_mac=device_mac,
-            success=(error is None),
-            result=result,
-            published_data_msgs=ctx._published_sensor_data_msgs - published_baseline,
-        )
+        return (error, result, ctx._published_sensor_data_msgs - published_baseline)
 
     async def _do_multi_start_notification(self, cmd: dict):
         # multi start/stop 期间挂起电量轮询（计数器，起/停可嵌套）：

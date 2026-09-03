@@ -40,6 +40,8 @@ _POWER_STABLE_BAND = 4
 # 交给链路层重连滚动重来
 _RECOVERY_STUCK_CHECK_SECONDS = 40.0
 _RECOVERY_STUCK_MAX = 3
+# onAutoReconnect 异步应答超时：超时未应答按 answer(False) 走默认恢复（对齐 C++ SDK）
+_AUTO_RECONNECT_ANSWER_TIMEOUT_SECONDS = 10.0
 
 
 class SensorProfile:
@@ -129,7 +131,7 @@ class SensorProfile:
         self._last_init_args = None        # 上次成功 init 的 (packageSampleCount, powerRefreshInterval)
         self._saved_params: dict = {}      # 上次传输期间成功设置的 setParam 参数（按设置顺序恢复）
         # 自动重连找到断连设备时的回调（None=走默认恢复流程）
-        self._on_auto_reconnect: Optional[Callable[["SensorProfile", bool], bool]] = None
+        self._on_auto_reconnect: Optional[Callable[..., None]] = None
         # 恢复卡死看门狗：重连成功但恢复（init/起流）迟迟未完成时计时，
         # 连续卡住达到上限后强制断链，让链路层重连滚动重来
         self._recovery_stuck_timer: Optional[threading.Timer] = None
@@ -339,21 +341,25 @@ class SensorProfile:
             self._resume_pending = False
 
     @property
-    def onAutoReconnect(self) -> Optional[Callable[["SensorProfile", bool], bool]]:
+    def onAutoReconnect(self) -> Optional[Callable[..., None]]:
         """自动重连找到断连设备（回到 Ready、即将恢复）时的回调；未设置（None）时走默认恢复流程。
 
-        签名：``callback(sensor, restore: bool) -> bool``
+        签名（异步应答式，对齐 C++ SDK）：``callback(sensor, restore: bool, answer) -> None``
         - ``restore=True``：存在上次会话的 init 参数与 setParam 设置（可保留和恢复）；
           ``restore=False``：无上次会话（全新初始化场景）。
-        - 返回 ``True``：应用已自行处理（全新初始化或自定义恢复），SDK 不再执行默认恢复；
-          待恢复标记在数据流真正恢复（``startDataNotification`` 成功）时才清除——若应用的
-          恢复失败，标记保留，下一次重连成功时会再次触发本回调重试恢复；
-        - 返回 ``False``：回落到默认恢复流程（连接→init→回放参数→开始传输）。
+        - 应用须在**任意线程**、之后的任意时刻**恰好调用一次** ``answer(handled)``：
+          ``answer(True)`` 表示应用自行接管恢复（全新初始化或自定义流程），SDK 不再执行
+          默认恢复；待恢复标记在数据流真正恢复（``startDataNotification`` 成功）时才清除——
+          若应用的恢复失败，标记保留，下一次重连成功时会再次触发本回调重试恢复；
+          ``answer(False)`` 回落到默认恢复流程（连接→init→回放参数→开始传输）。
+        - 10 秒无应答按 ``answer(False)`` 处理（告警日志）。
+        - 兼容旧的二参形式 ``callback(sensor, restore) -> bool``：返回值即应答。
+        - 回调跑在 SDK 专用恢复线程上，回调内允许阻塞调用（``init()``/``setParam()`` 等）。
         """
         return self._on_auto_reconnect
 
     @onAutoReconnect.setter
-    def onAutoReconnect(self, callback: Optional[Callable[["SensorProfile", bool], bool]]):
+    def onAutoReconnect(self, callback: Optional[Callable[..., None]]):
         self._log.d(_TAG, "onAutoReconnect registered" if callback is not None
                     else "onAutoReconnect cleared")
         self._on_auto_reconnect = callback
@@ -374,24 +380,75 @@ class SensorProfile:
         )
         thread.start()
 
+    def _ask_auto_reconnect_handler(self, restore: bool):
+        """调用 onAutoReconnect 回调并等待其异步应答。
+
+        返回 True（应用接管）/ False（回落默认恢复），或 None（等待应答期间
+        恢复被取消，如用户主动断连）。回调为异步应答式：应用须在任意线程恰好
+        调用一次 answer(handled)；10s 无应答按 answer(False) 处理并告警。
+        兼容旧的二参形式 callback(sensor, restore) -> bool：返回值即应答。
+        """
+        cb = self._on_auto_reconnect
+        import inspect
+        try:
+            arity = len(inspect.signature(cb).parameters)
+        except (TypeError, ValueError):
+            arity = 3
+        if arity <= 2:
+            # 旧形式：同步返回值即应答
+            try:
+                return bool(cb(self, restore))
+            except Exception as e:
+                self._log.e(_TAG, f"autoReconnect: onAutoReconnect callback failed: {e}")
+                return False
+
+        answered = threading.Event()
+        answer_lock = threading.Lock()
+        box = {"handled": False}
+
+        def answer(handled: bool):
+            # exactly-once（对齐 C++ 的 atomic CAS）：重复应答忽略
+            with answer_lock:
+                if answered.is_set():
+                    return
+                box["handled"] = bool(handled)
+                answered.set()
+
+        try:
+            cb(self, restore, answer)
+        except Exception as e:
+            self._log.e(_TAG, f"autoReconnect: onAutoReconnect callback failed: {e}")
+            answer(False)
+        # 专用恢复线程，可阻塞等待；等待期间恢复被取消（用户断连等）则放弃本轮
+        deadline = time.monotonic() + _AUTO_RECONNECT_ANSWER_TIMEOUT_SECONDS
+        while not answered.wait(0.1):
+            if not self._resume_pending:
+                self._log.i(_TAG, f"autoReconnect: recovery cancelled while waiting "
+                                  f"onAutoReconnect answer for {self._device_mac}")
+                return None
+            if time.monotonic() >= deadline:
+                self._log.w(_TAG, f"autoReconnect: onAutoReconnect answer timed out, "
+                                  f"default recovery for {self._device_mac}")
+                answer(False)
+        return box["handled"]
+
     def _recover_data_stream(self):
-        """恢复上次传输：先问 onAutoReconnect 回调（可自行为全新初始化/自定义恢复），
+        """恢复上次传输：先问 onAutoReconnect 回调（异步应答式，可自行为全新初始化/自定义恢复），
         未接管时走默认流程：init（上次参数）→ 按序回放 setParam → 开始数据通知。
         恢复阶段（_resume_pending 下）的 init / startDataNotification 失败会立即
         强制断链（在 _init / _startDataNotification 内部，init 已重试 3 轮，再失败
         大概率是设备应用层卡死，断链让链路层重连滚动重来）——默认流程与应用接管
-        路径（onAutoReconnect 返回 True 后应用自己调 init）同样生效；
+        路径（onAutoReconnect 应答 True 后应用自己调 init）同样生效；
         其余失败保持 _resume_pending，由卡死看门狗兜底，等待下一次重连成功再试；
         应用接管时待恢复标记延迟到 startDataNotification 成功才清除，应用恢复失败
         同样保留标记等待下一次重连。"""
         try:
             if self._on_auto_reconnect is not None:
                 restore = self._last_init_args is not None
-                try:
-                    handled = bool(self._on_auto_reconnect(self, restore))
-                except Exception as e:
-                    self._log.e(_TAG, f"autoReconnect: onAutoReconnect callback failed: {e}")
-                    handled = False
+                handled = self._ask_auto_reconnect_handler(restore)
+                if handled is None:
+                    # 等待应答期间恢复已被取消（用户断连等）
+                    return
                 if handled:
                     # 应用已接管恢复（全新初始化或自定义恢复）：待恢复标记不在此清除，
                     # 延迟到 startDataNotification 成功（流真正恢复）时清除；若应用的
